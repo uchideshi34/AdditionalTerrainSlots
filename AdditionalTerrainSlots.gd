@@ -671,8 +671,8 @@ func start() -> void:
 				var update_checker = Global.API.UpdateChecker
 				
 				update_checker.register(Global.API.UpdateChecker.builder()\
-														.fetcher(update_checker.github_fetcher("uchideshi34", "ExpandedTerrain"))\
-														.downloader(update_checker.github_downloader("uchideshi34", "ExpandedTerrain"))\
+														.fetcher(update_checker.github_fetcher("uchideshi34", "AdditionalTerrainSlots"))\
+														.downloader(update_checker.github_downloader("uchideshi34", "AdditionalTerrainSlots"))\
 														.build())
 		
 		Global.API.ModSignalingApi.connect_deferred("save_end", self, "on_save_end")
