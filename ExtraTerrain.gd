@@ -327,7 +327,6 @@ func set_terrain_texture(texture_path: String, index: int, update_atlas: bool = 
 	if texture == null: return
 
 	if index < textures.size():
-		material.set_shader_param("texture_" + str(index+1), texture)
 		textures[index] = texture
 		outputlog("setting: " + str(index) + " terrain: " + str(texture.resource_path),2)
 	
@@ -383,6 +382,80 @@ func update_brush_data(scale: float):
 	brush_data = scaled_brush.get_data()
 	brush_width = scaled_brush.get_width()
 	brush_height = scaled_brush.get_height()
+
+#########################################################################################################
+##
+## FLAT IMAGE FUNCTIONS
+##
+#########################################################################################################
+
+var terrain_viewport: Viewport
+var terrain_sprite: Sprite
+var is_terrain_baked: bool = false
+
+func bake_terrain_to_texture():
+	if is_terrain_baked:
+		return
+	
+	outputlog("Baking terrain to static texture", 2)
+	var time_record = time_function_start("bake_terrain_to_texture")
+	
+	# Create a viewport the size of your terrain
+	terrain_viewport = Viewport.new()
+	terrain_viewport.size = Vector2(width * BLOB_SIZE, height * BLOB_SIZE)
+	terrain_viewport.render_target_update_mode = Viewport.UPDATE_ONCE
+	terrain_viewport.render_target_v_flip = true
+	
+	# Add viewport to scene tree (required for rendering)
+	self.add_child(terrain_viewport)
+	
+	# Clone this mesh into the viewport
+	var mesh_copy = MeshInstance2D.new()
+	mesh_copy.mesh = self.mesh
+	mesh_copy.material = self.material
+	mesh_copy.position = Vector2.ZERO  # Position at origin in viewport
+	terrain_viewport.add_child(mesh_copy)
+	
+	# Force render (wait 2 frames)
+	yield(get_tree(), "idle_frame")
+	yield(get_tree(), "idle_frame")
+	
+	# Get the rendered texture
+	var texture = terrain_viewport.get_texture()
+	
+	# Create a simple sprite to display it
+	terrain_sprite = Sprite.new()
+	terrain_sprite.texture = texture
+	terrain_sprite.centered = false
+	terrain_sprite.position = self.position
+	terrain_sprite.z_index = self.z_index
+	terrain_sprite.name = "BakedTerrain"
+	
+	# Add sprite to parent
+	self.get_parent().add_child(terrain_sprite)
+	
+	# Hide the original mesh (keep it around in case you need to update)
+	self.visible = false
+	
+	is_terrain_baked = true
+	time_function_end(time_record)
+	outputlog("Terrain baked successfully", 2)
+
+# Call this when you want to update the terrain
+func unbake_terrain():
+	if not is_terrain_baked:
+		return
+	
+	if terrain_sprite:
+		terrain_sprite.queue_free()
+		terrain_sprite = null
+	
+	if terrain_viewport:
+		terrain_viewport.queue_free()
+		terrain_viewport = null
+	
+	self.visible = true
+	is_terrain_baked = false
 
 #########################################################################################################
 ##
@@ -927,7 +1000,7 @@ func get_overall_splat_total(_i: int, _j: int):
 	for _m in splatImages.size():
 		total += splatImages[_m].get_splat_total(_i, _j)
 	
-	if first: outputlog("total: "+ str(total),2)
+	if first: outputlog("total: "+ str(total),3)
 	return total
 
 func print_complete_entry(_i, _j, extra_desc: String = ""):
@@ -940,12 +1013,12 @@ func print_complete_entry(_i, _j, extra_desc: String = ""):
 		for _k in 4:
 			output_str += str(splatImages[_m].get_byte_data_entry(_i,_j,_k)) + " "
 	
-	outputlog(output_str,2)
+	outputlog(output_str,3)
 
 # Function to cycle through each splatimage and set its byte data from the image value
 func refresh_all_splats_byte_data():
 
-	outputlog("refresh_all_splats_byte_data",2)
+	outputlog("refresh_all_splats_byte_data",3)
 
 	for _i in splatImages.size():
 		splatImages[_i].load_byte_data()
@@ -970,7 +1043,7 @@ class SplatImage extends Image:
 	const BLOB_SIZE = 64.0
 	# Logging Functions
 	const ENABLE_LOGGING = true
-	var logging_level = 3
+	var logging_level = 2
 	var first
 	var byte_data: PoolByteArray
 	var splat_number = -1

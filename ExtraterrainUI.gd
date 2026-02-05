@@ -9,10 +9,18 @@ var terrain_slots_button = null
 var brush_size_slider = null
 var intensity_slider = null
 var terrainwindow = null
+var sync_from_dd_terrain_button = null
+var sync_to_dd_terrain_button = null
+
+var terrainwindow_texturemenu = null
+
 var global
 var reference_to_script
 var terrainwindow_terrain_index_selected = 0
 var smoothblending_button = null
+
+const MIN_SPLATS = 3
+const MAX_SPLATS = 4
 
 # Logging Functions
 const ENABLE_LOGGING = true
@@ -20,6 +28,8 @@ var logging_level = 2
 
 signal launch_terrain_window
 signal terrain_changed
+signal sync_to_terrain
+signal sync_from_terrain
 
 #########################################################################################################
 ##
@@ -92,6 +102,23 @@ func find_texture_name_and_pack(texture_string):
 	
 	return {"texture_name": texture_name,"pack_name": pack_name, "pack_id": pack_id}
 
+# Function to look at resource string and return the texture
+func load_image_texture(texture_path: String):
+
+	var image = Image.new()
+	var texture = ImageTexture.new()
+
+	# If it isn't an internal resource
+	if not "res://" in texture_path:
+		image.load(global.Root + texture_path)
+		texture.create_from_image(image)
+	# If it is an internal resource then just use the ResourceLoader
+	else:
+		texture = safe_load_texture(texture_path)
+	
+	return texture
+
+
 #########################################################################################################
 ##
 ## INIT FUNCTIONS
@@ -125,7 +152,7 @@ func _init(parent: Control = null, global_ref = null, index: int = -1):
 	slots_label.text = "Slots Number"
 	terrain_slots_button = OptionButton.new()
 	terrain_slots_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	for _i in range(1,5,1):
+	for _i in range(MIN_SPLATS,MAX_SPLATS+1,1):
 		terrain_slots_button.add_item(str(_i * 4))
 	parent.add_child(hbox)
 	hbox.add_child(slots_label)
@@ -158,6 +185,26 @@ func _init(parent: Control = null, global_ref = null, index: int = -1):
 	smoothblending_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(smoothblending_button)
 
+	sync_from_dd_terrain_button = Button.new()
+	sync_from_dd_terrain_button.text = "Pull From Terrain Tool"
+	parent.add_child(sync_from_dd_terrain_button)
+
+	sync_to_dd_terrain_button = Button.new()
+	sync_to_dd_terrain_button.text = "Push To Terrain Tool"
+	parent.add_child(sync_to_dd_terrain_button)
+
+	initialise_terrain_selection_window()
+
+#########################################################################################################
+##
+## TERRAIN WINDOW FUNCTIONS
+##
+#########################################################################################################
+
+func initialise_terrain_selection_window():
+
+	outputlog("initialise_terrain_selection_window",1)
+
 	var terrainwindow_template = ResourceLoader.load(global.Root + "ui/terrainwindow.tscn", "", true)
 	terrainwindow = terrainwindow_template.instance()
 	global.Editor.get_child("Windows").add_child(terrainwindow)
@@ -165,11 +212,30 @@ func _init(parent: Control = null, global_ref = null, index: int = -1):
 	terrainwindow.find_node("PackList").connect("item_selected", self, "on_terrainwindow_pack_list_item_selected")
 	terrainwindow.find_node("TextureMenu").connect("item_selected", self, "on_terrainwindow_terrain_item_selected")
 
-#########################################################################################################
-##
-## TERRAIN WINDOW FUNCTIONS
-##
-#########################################################################################################
+	var vbox = VBoxContainer.new()
+	terrainwindow_texturemenu = terrainwindow.find_node("TextureMenu")
+	terrainwindow.find_node("Splitter").remove_child(terrainwindow_texturemenu)
+	terrainwindow.find_node("Splitter").add_child(vbox)
+
+	var search_hbox = HBoxContainer.new()
+	search_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var search_label = Label.new()
+	search_label.text = "Search "
+	var search_lineedit = LineEdit.new()
+	search_lineedit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var search_clearbutton = Button.new()
+	search_clearbutton.icon = load_image_texture("ui/trash_icon.png")
+	search_clearbutton.connect("pressed", self, "on_clearbutton_pressed", [search_lineedit])
+	search_lineedit.connect("text_entered",self,"on_new_search_text")
+	search_lineedit.connect("text_changed",self,"on_new_search_text")
+	
+	search_hbox.add_child(search_label)
+	search_hbox.add_child(search_lineedit)
+	search_hbox.add_child(search_clearbutton)
+	
+	vbox.add_child(search_hbox)
+	vbox.add_child(terrainwindow_texturemenu)
 
 # Populate the terrain window
 func on_terrainwindow_about_to_show():
@@ -204,6 +270,7 @@ func update_terrainwindow_pack_list():
 	if global.Header.UsesDefaultAssets:
 		pack_list.push_front({"pack_id": "nativeDD", "pack_name": "Default"})
 
+	pack_list.push_front({"pack_id": "all", "pack_name": "All"})
 	var packListPath = terrainwindow.find_node("PackList")
 
 	packListPath.clear()
@@ -218,25 +285,79 @@ func update_terrainwindow_pack_list():
 
 func on_terrainwindow_pack_list_item_selected(index: int):
 
+	outputlog("on_terrainwindow_pack_list_item_selected",2)
+
 	var terrain_list = reference_to_script.GetAssetList("Terrain")
 	var pack_id = terrainwindow.find_node("PackList").get_item_metadata(index)
 
-	var textureMenu = terrainwindow.find_node("TextureMenu") 
-
-	textureMenu.clear()
+	terrainwindow_texturemenu.clear()
 	for terrain_path in terrain_list:
 		var entry = find_texture_name_and_pack(terrain_path)
-		if entry["pack_id"] == pack_id:
-			textureMenu.add_item(entry["texture_name"], safe_load_texture(terrain_path))
-			textureMenu.set_item_metadata(textureMenu.get_item_count()-1, terrain_path)
+		if entry["pack_id"] == pack_id || pack_id == "all":
+			terrainwindow_texturemenu.add_item(entry["texture_name"], safe_load_texture(terrain_path))
+			terrainwindow_texturemenu.set_item_metadata(terrainwindow_texturemenu.get_item_count()-1, terrain_path)
 
 func on_terrainwindow_terrain_item_selected(index: int):
 
-	var textureMenu = terrainwindow.find_node("TextureMenu")
+	outputlog("on_terrainwindow_terrain_item_selected",2)
 
-	self.set_terrain_entry(terrainwindow_terrain_index_selected, textureMenu.get_item_metadata(index))
-	self.emit_signal("terrain_changed", textureMenu.get_item_metadata(index), terrainwindow_terrain_index_selected)
+	self.set_terrain_entry(terrainwindow_terrain_index_selected, terrainwindow_texturemenu.get_item_metadata(index))
+	self.emit_signal("terrain_changed", terrainwindow_texturemenu.get_item_metadata(index), terrainwindow_terrain_index_selected)
 	terrainwindow.hide()
+
+func on_clearbutton_pressed(lineedit: LineEdit):
+
+	outputlog("on_clearbutton_pressed",2)
+
+	lineedit.text = ""
+	on_new_search_text(lineedit.text)
+
+func on_new_search_text(search_text: String):
+
+	outputlog("on_new_search_text",2)
+
+	if terrainwindow.find_node("PackList").selected < 0: return
+	terrainwindow_texturemenu.clear()
+	var pack_id = terrainwindow.find_node("PackList").get_item_metadata(terrainwindow.find_node("PackList").selected)
+	var terrain_list = reference_to_script.GetAssetList("Terrain")
+	for terrain_path in terrain_list:
+		var entry = find_texture_name_and_pack(terrain_path)
+		if (entry["pack_id"] == pack_id || pack_id == "all") && is_valid_search_result(entry["texture_name"], search_text):
+			terrainwindow_texturemenu.add_item(entry["texture_name"], safe_load_texture(terrain_path))
+			terrainwindow_texturemenu.set_item_metadata(terrainwindow_texturemenu.get_item_count()-1, terrain_path)
+
+# Algorithm to check if the search term matches the string
+func is_valid_search_result(search_in_this: String, for_this: String):
+
+	var list_of_words
+	var return_value = false
+
+	if for_this == "": return true
+
+	# Replace - and _ with space and then separate as needed
+	for_this = for_this.replace("-"," ")
+	for_this = for_this.replace("_"," ")
+
+	# If there is a space then treat each space separated word as a required value
+	if for_this.find(" ") > -1:
+		# Split the string into words
+		list_of_words = for_this.split(" ")
+		# For each word in the list
+		for word in list_of_words:
+			# Default to true
+			return_value = true
+			# Check if the word is found and if not then set the whole thing as not found
+			if not (search_in_this.find(word) > -1) && word != "":
+				return_value = false
+				break
+	# Otherwise we are in the simply one word case
+	else:
+		# Check is we find the search term
+		if search_in_this.find(for_this) > -1:
+			return_value = true
+
+	return return_value
+
 
 #########################################################################################################
 ##

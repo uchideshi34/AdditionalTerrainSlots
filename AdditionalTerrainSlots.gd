@@ -16,6 +16,7 @@ var extraterrainui
 var tool_panel = null
 var activate_terrain_button = null
 var store_level_ids = {}
+var store_current_level = null
 
 var areabrush
 var tool_is_active = false
@@ -224,6 +225,7 @@ func initialise_extraterrain(level):
 		for _i in extraterrainui.vbox.get_child_count():
 			extraterrain.textures.append(null)
 			extraterrain.set_terrain_texture(extraterrainui.get_terrain_entry(_i).texture_path,_i, false)
+		extraterrain.set_splat_number(extraterrainui.vbox.get_child_count()/4)
 		extraterrain.build_all_atlases()
 		extraterrain.update_splats()
 		extraterrain.brush_image = safe_load_texture("res://textures/brushes/soft_circle.png")
@@ -271,8 +273,8 @@ func make_expandedterrain_ui():
 	extraterrainui = ExtraTerrainUI.new(tool_panel.Align, Global)
 	extraterrainui.reference_to_script = Script
 	
-	extraterrainui.add_terrain_entries(4)
-	for _i in 4:
+	extraterrainui.add_terrain_entries(12)
+	for _i in 12:
 		extraterrainui.set_terrain_entry(_i, Script.GetAssetList("Terrain")[_i])
 	
 	extraterrainui.set_active_terrain(0)
@@ -285,12 +287,62 @@ func make_expandedterrain_ui():
 	extraterrainui.smoothblending_button.connect("toggled", self, "on_smoothblending_toggled")
 	extraterrainui.show_hide_button.connect("toggled", self, "on_show_hide_button_toggled")
 
+	extraterrainui.sync_from_dd_terrain_button.connect("pressed", self, "on_sync_from_dd_terrain_button_pressed")
+	extraterrainui.sync_to_dd_terrain_button.connect("pressed", self, "on_sync_to_dd_terrain_button_pressed")
+
+func on_sync_from_dd_terrain_button_pressed():
+
+	outputlog("on_sync_from_dd_terrain_button_pressed",2)
+
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		var ddterrain = Global.World.GetCurrentLevel().Terrain
+		outputlog("ddterrain: " + str(Global.World.GetCurrentLevel().Terrain))
+		extraterrain.splatImages[0].byte_data = ddterrain.splatImage.get_data()
+		outputlog("set splat: " + str(ddterrain.splatImage))
+		if ddterrain.ExpandedSlots:
+			extraterrain.splatImages[1].byte_data = ddterrain.splatImage2.get_data()
+		else:
+			outputlog("not expanded")
+			outputlog("extraterrain.splatImage[1]: " + str(extraterrain.splatImages[1]))
+			extraterrain.splatImages[1].fill(Color(0.0, 0.0, 0.0, 0.0))
+		outputlog("set splat2: " + str(ddterrain.splatImage2))
+		for _i in range(2, extraterrain.num_splats, 1):
+			extraterrain.splatImages[_i].fill(Color(0.0, 0.0, 0.0, 0.0))
+		extraterrain.refresh_all_splats_images_from_byte_data()
+
+		for _i in ddterrain.textures.size():
+			extraterrainui.set_terrain_entry(_i, ddterrain.textures[_i].resource_path)
+		
+		extraterrainui.smoothblending_button.pressed = ddterrain.SmoothBlending
+		update_terrain_from_ui()
+
+func on_sync_to_dd_terrain_button_pressed():
+
+	outputlog("on_sync_to_dd_terrain_button_pressed",2)
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		var ddterrain = Global.World.GetCurrentLevel().Terrain
+		outputlog(Global.Editor.Tools["TerrainBrush"].Controls)
+		Global.Editor.Tools["TerrainBrush"].Controls["SmoothBlending"].pressed = extraterrainui.smoothblending_button.pressed
+		Global.Editor.Tools["TerrainBrush"].Controls["ExpandSlotsButton"].pressed = true
+		Global.Editor.Tools["TerrainBrush"].Controls["Enabled"].pressed = extraterrainui.show_hide_button.pressed
+		for _i in 8:
+			# Set the texture noting the thumbnail isn't quite right
+			ddterrain.SetTexture(extraterrain.textures[_i],_i)
+
+		ddterrain.splatImage.create_from_data(extraterrain.splatImages[0].get_width(), extraterrain.splatImages[0].get_height(), false, Image.FORMAT_RGBA8, extraterrain.splatImages[0].byte_data)
+		ddterrain.splatImage2.create_from_data(extraterrain.splatImages[1].get_width(), extraterrain.splatImages[1].get_height(), false, Image.FORMAT_RGBA8, extraterrain.splatImages[1].byte_data)
+		ddterrain.UpdateSplat()
+
 func on_show_hide_button_toggled(button_pressed: bool):
 
 	outputlog("on_show_hide_button_toggled: " + str(button_pressed),2)
-	if Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME) != null:
-		Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME).visible = button_pressed
-
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		extraterrain.visible = button_pressed
+		if not button_pressed:
+			extraterrain.unbake_terrain()
 
 func on_smoothblending_toggled(button_pressed: bool):
 
@@ -316,17 +368,19 @@ func on_fill_button_pressed():
 	if Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME) != null:
 		Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME).fill_channel(extraterrainui.active_terrain_index)
 
+# Function when a new value for terrain slots is selected
 func on_terrain_slots_number_selected(item_selected: int):
 
 	outputlog("on_terrain_slots_number_selected: " + str(item_selected),2)
 
 	var current_count = extraterrainui.vbox.get_child_count()
+	var slots_number = item_selected * 4 + extraterrainui.MIN_SPLATS * 4
 
-	extraterrainui.set_number_terrain_entries(item_selected * 4 + 4)
+	extraterrainui.set_number_terrain_entries(slots_number)
 
 	outputlog("current_count: " + str(current_count))
 		
-	for _i in range(current_count,item_selected * 4 + 4,1):
+	for _i in range(current_count,slots_number,1):
 		outputlog("_i: " + str(_i))
 		extraterrainui.set_terrain_entry(_i, Script.GetAssetList("Terrain")[(_i) % Script.GetAssetList("Terrain").size()])
 	
@@ -357,8 +411,10 @@ func update_terrain_from_ui():
 		extraterrain.update_terrain_atlas()
 		extraterrain.update_splats()
 
-		if extraterrainui.active_terrain_index > (extraterrainui.terrain_slots_button.selected * 4 + 4):
+		if extraterrainui.active_terrain_index > (extraterrainui.terrain_slots_button.selected * 4 + 12):
 			extraterrainui.set_active_terrain(0)
+		
+		on_smoothblending_toggled(extraterrainui.smoothblending_button.pressed)
 
 # Function to update the ui to reflect the current level's values
 func update_ui_from_terrain(level):
@@ -372,7 +428,7 @@ func update_ui_from_terrain(level):
 		#set_property_but_block_signals(activate_terrain_button,"pressed",true)
 		activate_terrain_button.pressed = true
 		extraterrainui.set_block_signals(true)
-		extraterrainui.terrain_slots_button.select(extraterrain.num_splats-1)
+		extraterrainui.terrain_slots_button.select(extraterrain.num_splats-1-2)
 		extraterrainui.set_number_terrain_entries(extraterrain.num_splats * 4)
 		for _i in extraterrain.num_splats * 4:
 			extraterrainui.set_terrain_entry(_i, extraterrain.textures[_i].resource_path)
@@ -387,7 +443,20 @@ func update_ui_from_terrain(level):
 # When a level is changed
 func on_level_change(_ignore_this):
 
-	update_ui_from_terrain(Global.World.GetCurrentLevel())
+	var level = Global.World.GetCurrentLevel()
+
+	update_ui_from_terrain(level)
+	if level != store_current_level:
+		var extraterrain = level.get_node_or_null(NODE_NAME)
+		# Bake the new level's terrain if it has one
+		if extraterrain != null && not tool_is_active:
+			extraterrain.bake_terrain_to_texture()
+		
+		# Unbake the old terrain if it exists
+		if store_current_level.get_node_or_null(NODE_NAME):
+			store_current_level.get_node_or_null(NODE_NAME).unbake_terrain()
+
+		store_current_level = level
 
 
 #########################################################################################################
@@ -485,17 +554,15 @@ func load_extraterrain_data():
 	outputlog("load_extraterrain_data",2)
 	# For each level
 	for level in Global.World.levels:
-		outputlog("check level",2)
 		# Check if there is terrain data for it
 		if has_extraterrain_data(level.ID):
-			outputlog("there is data")
 			# Initialise the level if so
 			initialise_extraterrain(level)
 			# Get its extraterrain record
 			var extraterrain = level.get_node_or_null(NODE_NAME)
-			outputlog("load_extraterrain_data: extraterrain: " + str(extraterrain))
 			if extraterrain != null:
 				extraterrain.load_from_data_record(get_extraterrain_data(level.ID))
+		
 
 
 # Called when a new level might have been created or deleted. We need to move the data records as they are keyed off level.ID which can change
@@ -580,12 +647,25 @@ func on_content_input(event):
 		areabrush.show_brush_stroke_preview(Global.WorldUI.get_MousePosition())
 
 func on_tool_enable(tool_id):
+
+	outputlog("on_tool_enable: " + str(tool_id),2)
+
 	tool_is_active = true
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		extraterrain.unbake_terrain()
 
 func on_tool_disable(tool_id):
+
+	outputlog("on_tool_disable: " + str(tool_id),2)
+
 	tool_is_active = false
 	areabrush.hide_brush_stroke_preview()
 	is_painting = false
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null && extraterrainui.show_hide_button.pressed:
+		extraterrain.bake_terrain_to_texture()
+
 
 #########################################################################################################
 ##
@@ -700,3 +780,8 @@ func start() -> void:
 		Global.Editor.LevelOptions.get_parent().find_node("LevelUp").connect("pressed", self, "on_level_change",[0])
 	
 	update_ui_from_terrain(Global.World.GetCurrentLevel())
+	store_current_level = Global.World.GetCurrentLevel()
+
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		extraterrain.bake_terrain_to_texture()
