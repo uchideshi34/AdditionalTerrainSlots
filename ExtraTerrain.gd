@@ -31,6 +31,7 @@ var smoothblending = false
 var num_splats = 0
 var global = null
 
+var can_bake_while_painting = true
 
 const BLOB_SIZE = 64.0
 const BLOB_OFFSET = 32.0
@@ -168,6 +169,9 @@ func _init(parent_level, woxelDimensions: Vector2):
 
 	width = int(woxelDimensions.x / BLOB_SIZE)
 	height = int(woxelDimensions.y / BLOB_SIZE)
+	if woxelDimensions.x > 16384 - 256 ||  woxelDimensions.y > 16384 - 256:
+		can_bake_while_painting = false
+
 	update_mesh(woxelDimensions)
 	level = parent_level
 	level.add_child(self)
@@ -186,8 +190,8 @@ func _init(parent_level, woxelDimensions: Vector2):
 # Function to update the mesh to the World size
 func update_mesh(woxelDimensions: Vector2):
 
-	var width = woxelDimensions.x
-	var height = woxelDimensions.y
+	var pixel_width = woxelDimensions.x
+	var pixel_height = woxelDimensions.y
 
 	var new_mesh = ArrayMesh.new()
 	var arrays = []
@@ -196,9 +200,9 @@ func update_mesh(woxelDimensions: Vector2):
 	# Vertices (top-left origin)
 	arrays[Mesh.ARRAY_VERTEX] = PoolVector2Array([
 		Vector2(0, 0),           # Top-left
-		Vector2(width, 0),       # Top-right
-		Vector2(width, height),  # Bottom-right
-		Vector2(0, height)       # Bottom-left
+		Vector2(pixel_width, 0),       # Top-right
+		Vector2(pixel_width, pixel_height),  # Bottom-right
+		Vector2(0, pixel_height)       # Bottom-left
 	])
 
 	# UVs
@@ -218,6 +222,7 @@ func update_mesh(woxelDimensions: Vector2):
 	new_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 	self.mesh = new_mesh
+	self.material.set_shader_param("map_size",woxelDimensions)
 
 
 #########################################################################################################
@@ -385,70 +390,165 @@ func update_brush_data(scale: float):
 
 #########################################################################################################
 ##
+## RESIZE FUNCTIONS
+##
+#########################################################################################################
+
+func resize( up_delta_sq: int, down_delta_sq: int, right_delta_sq: int, left_delta_sq: int):
+
+	outputlog("resize: up_delta_sq: " + str(up_delta_sq) + " down_delta_sq: " + str(up_delta_sq) + " right_delta_sq: " + str(right_delta_sq) + " left_delta_sq: " + str(left_delta_sq),2)
+
+	# Update splats
+	for _i in num_splats:
+		splatImages[_i].resize_splat(Vector2(width, height),  up_delta_sq * 4, down_delta_sq * 4, right_delta_sq * 4, left_delta_sq * 4)
+
+	width += right_delta_sq * 4 + left_delta_sq * 4
+	height += up_delta_sq * 4 + down_delta_sq * 4
+
+	update_mesh(Vector2(width, height)*BLOB_SIZE)
+	update_splats()
+
+#########################################################################################################
+##
 ## FLAT IMAGE FUNCTIONS
 ##
 #########################################################################################################
 
 var terrain_viewport: Viewport
-var terrain_sprite: Sprite
+var terrain_sprites: Array
 var is_terrain_baked: bool = false
+var is_baking: bool = false
 
 func bake_terrain_to_texture():
-	if is_terrain_baked:
+	if is_terrain_baked || is_baking:
 		return
 	
-	outputlog("Baking terrain to static texture", 2)
+	is_baking = true
+	
+	outputlog("Baking terrain to static texture", 1)
 	var time_record = time_function_start("bake_terrain_to_texture")
 	
-	# Create a viewport the size of your terrain
+	var full_size = Vector2(width * BLOB_SIZE, height * BLOB_SIZE)
+	var tile_size = 8192  # Render in 8192x8192 chunks
+	var tiles_x = int(ceil(full_size.x / tile_size))
+	var tiles_y = int(ceil(full_size.y / tile_size))
+	
+	outputlog("Rendering " + str(tiles_x) + "x" + str(tiles_y) + " tiles", 1)
+	
+	# Create viewport for tiled rendering
 	terrain_viewport = Viewport.new()
-	terrain_viewport.size = Vector2(width * BLOB_SIZE, height * BLOB_SIZE)
-	terrain_viewport.render_target_update_mode = Viewport.UPDATE_ONCE
+	terrain_viewport.size = Vector2(tile_size, tile_size)
+	terrain_viewport.hdr = false
+	terrain_viewport.usage = Viewport.USAGE_2D
+	terrain_viewport.render_target_update_mode = Viewport.UPDATE_ALWAYS
 	terrain_viewport.render_target_v_flip = true
 	
-	# Add viewport to scene tree (required for rendering)
-	self.add_child(terrain_viewport)
+	add_child(terrain_viewport)
 	
-	# Clone this mesh into the viewport
+	# Clone mesh
 	var mesh_copy = MeshInstance2D.new()
 	mesh_copy.mesh = self.mesh
 	mesh_copy.material = self.material
-	mesh_copy.position = Vector2.ZERO  # Position at origin in viewport
 	terrain_viewport.add_child(mesh_copy)
 	
-	# Force render (wait 2 frames)
-	yield(get_tree(), "idle_frame")
-	yield(get_tree(), "idle_frame")
-	
-	# Get the rendered texture
-	var texture = terrain_viewport.get_texture()
-	
-	# Create a simple sprite to display it
-	terrain_sprite = Sprite.new()
-	terrain_sprite.texture = texture
-	terrain_sprite.centered = false
-	terrain_sprite.position = self.position
-	terrain_sprite.z_index = self.z_index
-	terrain_sprite.name = "BakedTerrain"
-	
-	# Add sprite to parent
-	self.get_parent().add_child(terrain_sprite)
-	
-	# Hide the original mesh (keep it around in case you need to update)
-	self.visible = false
-	
-	is_terrain_baked = true
-	time_function_end(time_record)
-	outputlog("Terrain baked successfully", 2)
+	# Array to store tile sprites for cleanup
+	var tile_sprites = []
 
-# Call this when you want to update the terrain
+	# If this is too big to render as a single image then tile is
+	if full_size.x > (16384 - 256) || full_size.x > (16384 - 256):
+	
+		# Render each tile
+		for ty in range(tiles_y):
+			for tx in range(tiles_x):
+				var offset_x = tx * tile_size
+				var offset_y = ty * tile_size
+				
+				# Calculate actual tile dimensions (may be smaller at edges)
+				var actual_width = min(tile_size, full_size.x - offset_x)
+				var actual_height = min(tile_size, full_size.y - offset_y)
+				var is_edge_tile = actual_width < tile_size or actual_height < tile_size
+				
+				# Position mesh to render this tile
+				mesh_copy.position = Vector2(-offset_x, -offset_y)
+				
+				yield(get_tree(), "idle_frame")
+				yield(get_tree(), "idle_frame")
+				
+				# Get tile image
+				var tile_img = terrain_viewport.get_texture().get_data()
+				
+				# Only crop if this is an edge tile
+				if is_edge_tile:
+					var cropped = Image.new()
+					cropped.create(int(actual_width), int(actual_height), false, Image.FORMAT_RGBA8)
+					cropped.lock()
+					tile_img.lock()
+					cropped.blit_rect(tile_img, Rect2(0, 0, actual_width, actual_height), Vector2.ZERO)
+					tile_img.unlock()
+					cropped.unlock()
+					tile_img = cropped
+				
+				# Create texture from tile
+				var tile_tex = ImageTexture.new()
+				tile_tex.create_from_image(tile_img)
+				
+				# Create sprite for this tile
+				var tile_sprite = Sprite.new()
+				tile_sprite.texture = tile_tex
+				tile_sprite.centered = false
+				tile_sprite.position = self.position + Vector2(offset_x, offset_y)
+				tile_sprite.z_index = self.z_index
+				tile_sprite.name = "BakedTerrainTile_" + str(tx) + "_" + str(ty)
+				
+				get_parent().add_child(tile_sprite)
+				tile_sprites.append(tile_sprite)
+				
+				outputlog("Rendered tile " + str(tx) + "," + str(ty) + " size: " + str(actual_width) + "x" + str(actual_height), 2)
+	
+	# Otherwise just create a single image which is much faster
+	else:
+
+		var texture = terrain_viewport.get_texture()
+	
+		# Create a simple sprite to display it
+		var terrain_sprite = Sprite.new()
+		terrain_sprite.texture = texture
+		terrain_sprite.centered = false
+		terrain_sprite.position = self.position
+		terrain_sprite.z_index = self.z_index
+		terrain_sprite.name = "BakedTerrain"
+
+		tile_sprites.append(terrain_sprite)
+	
+		# Add sprite to parent
+		get_parent().add_child(terrain_sprite)
+
+	# Store tile sprites for cleanup
+	terrain_sprites = tile_sprites.duplicate(true)
+	
+	self.visible = false
+	is_terrain_baked = true
+	is_baking = false
+	time_function_end(time_record)
+
 func unbake_terrain():
+
+	outputlog("unbake_terrain", 2)
+
 	if not is_terrain_baked:
 		return
 	
-	if terrain_sprite:
-		terrain_sprite.queue_free()
-		terrain_sprite = null
+	# Wait until the bake has completed before unbaking
+	while is_baking:
+		yield(get_tree(), "idle_frame")
+	
+	# terrain_sprite is now an array of sprites
+	if terrain_sprites and terrain_sprites is Array:
+		for sprite in terrain_sprites:
+			if sprite:
+				get_parent().remove_child(sprite)
+				sprite.queue_free()
+		terrain_sprites = []
 	
 	if terrain_viewport:
 		terrain_viewport.queue_free()
@@ -898,100 +998,6 @@ func reduce_array_in_place(array: Array, total_reduce: int) -> void:
 
 	if first: outputlog("final array: " + str(array),3)
 
-# NOT USED - New algorithm which may not be needed and is not fully tested.
-func new_blend_into_channel(_i, _j, channel, rate):
-
-	var complete_entry_array = []
-
-	for _m in splatImages.size():
-		if first: outputlog("making entry for splat: " + str(splatImages[_m].splat_number),2)
-		var entry_array = splatImages[_m].make_array_of_splat_values(_i, _j)
-		complete_entry_array.append_array(entry_array.duplicate())
-	
-	redistribute_values(complete_entry_array, channel, rate)
-
-func redistribute_values(result: Array, increase_index: int, increase_amount: int):
-	# Create a copy to avoid modifying the original
-	var size = result.size()
-	
-	if size == 0 or increase_index < 0 or increase_index >= size:
-		return
-	
-	# Calculate current total
-	var current_total = 0
-	for val in result:
-		current_total += val
-	
-	# Handle case where total is less than 255
-	if current_total < 255:
-		var deficit = 255 - current_total
-		var to_add_to_target = min(increase_amount, deficit, 255 - result[increase_index])
-		result[increase_index] += to_add_to_target
-		increase_amount -= to_add_to_target
-		current_total += to_add_to_target
-		
-		# If target is at 255 and we still need to reach total of 255, distribute to others
-		if result[increase_index] == 255 and current_total < 255:
-			var others = []
-			for i in range(size):
-				if i != increase_index and result[i] < 255:
-					others.append(i)
-			
-			var remaining_deficit = 255 - current_total
-			while remaining_deficit > 0 and others.size() > 0:
-				var per_element = max(1, int(ceil(float(remaining_deficit) / others.size())))
-				var added = 0
-				var i = 0
-				while i < others.size():
-					var idx = others[i]
-					var room = 255 - result[idx]
-					var to_add = min(per_element, room, remaining_deficit - added)
-					result[idx] += to_add
-					added += to_add
-					if result[idx] >= 255:
-						others.remove(i)
-					else:
-						i += 1
-				remaining_deficit -= added
-				if added == 0:
-					break
-		
-		return
-	
-	# Normal case: total is 255, redistribute
-	var actual_increase = min(increase_amount, 255 - result[increase_index])
-	result[increase_index] += actual_increase
-	
-	var to_reduce = actual_increase
-	
-	# Build list of reducible indices
-	var reducible = []
-	for i in range(size):
-		if i != increase_index and result[i] > 0:
-			reducible.append(i)
-	
-	# Reduce other elements equally
-	while to_reduce > 0 and reducible.size() > 0:
-		var per_element = max(1, int(ceil(float(to_reduce) / reducible.size())))
-		var reduced_this_round = 0
-		
-		var i = 0
-		while i < reducible.size():
-			var idx = reducible[i]
-			var can_reduce = min(per_element, result[idx], to_reduce - reduced_this_round)
-			result[idx] -= can_reduce
-			reduced_this_round += can_reduce
-			
-			if result[idx] <= 0:
-				reducible.remove(i)
-			else:
-				i += 1
-		
-		to_reduce -= reduced_this_round
-		
-		if reduced_this_round == 0:
-			break
-
 func get_overall_splat_total(_i: int, _j: int):
 
 	if first: outputlog("get_overall_splat_total",3)
@@ -1116,6 +1122,25 @@ class SplatImage extends Image:
 		for _k in 4:
 			total += get_byte_data_entry(_i, _j, _k)
 		return total
+	
+	func resize_splat(original_size: Vector2, up_delta: int, down_delta: int, right_delta: int, left_delta: int):
+
+		outputlog("resize_splat",2)
+
+		var new_size = Vector2(original_size.x + right_delta + left_delta, original_size.y + up_delta + down_delta)
+
+		var img = Image.new()
+		img.create(new_size.x, new_size.y, false, Image.FORMAT_RGBA8 )
+		if splat_number == 0:
+			img.fill(Color(1.0, 0.0, 0.0, 0.0))
+		else:
+			img.fill(Color(0.0, 0.0, 0.0, 0.0))
+		
+		img.blit_rect(self, Rect2(0.0, 0.0, original_size.x, original_size.y), Vector2(left_delta, up_delta))
+
+		self.create_from_data(new_size.x, new_size.y, false, Image.FORMAT_RGBA8, img.get_data())
+
+		
 
 #########################################################################################################
 ##

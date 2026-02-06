@@ -21,6 +21,9 @@ var store_current_level = null
 var areabrush
 var tool_is_active = false
 var is_painting = false
+var has_started_painting = false
+
+var enable_baking = true
 
 const NODE_NAME = "ExtraTerrain987234"
 const INTENSITY_CONSTANT = 0.25
@@ -217,19 +220,25 @@ func initialise_extraterrain(level):
 	if extraterrain == null:
 		outputlog("ExtraTerrain: " + str(ExtraTerrain),2)
 		extraterrain = ExtraTerrain.new(level, Global.World.WoxelDimensions)
-		extraterrain.Global = Global
+		extraterrain.global = Global
 		outputlog("extraterrain is null",2)
 		outputlog("extraterrain: " + str(extraterrain),2)
 		extraterrain.material.shader = ResourceLoader.load(Global.Root + "shaders/terrain.shader","Shader",true)
 		extraterrain.textures = []
+		outputlog("got here",2)
 		for _i in extraterrainui.vbox.get_child_count():
+			outputlog("_i: " + str(_i),2)
 			extraterrain.textures.append(null)
-			extraterrain.set_terrain_texture(extraterrainui.get_terrain_entry(_i).texture_path,_i, false)
+			outputlog("append_null: ",2)
+			if extraterrainui.get_terrain_entry(_i) != null:
+				extraterrain.set_terrain_texture(extraterrainui.get_terrain_entry(_i).texture_path, _i, false)
+		outputlog("got here2",2)
 		extraterrain.set_splat_number(extraterrainui.vbox.get_child_count()/4)
 		extraterrain.build_all_atlases()
 		extraterrain.update_splats()
 		extraterrain.brush_image = safe_load_texture("res://textures/brushes/soft_circle.png")
 		extraterrain.update_brush_data(8 * 0.5)
+		outputlog("initialise_extraterrain: complete",2)
 
 func _on_activate_terrain_button_pressed(button_pressed: bool):
 
@@ -449,7 +458,7 @@ func on_level_change(_ignore_this):
 	if level != store_current_level:
 		var extraterrain = level.get_node_or_null(NODE_NAME)
 		# Bake the new level's terrain if it has one
-		if extraterrain != null && not tool_is_active:
+		if extraterrain != null && not tool_is_active && enable_baking:
 			extraterrain.bake_terrain_to_texture()
 		
 		# Unbake the old terrain if it exists
@@ -630,7 +639,17 @@ func on_save_end():
 func update(delta : float):
 
 	if tool_is_active && is_painting:
+		# If this is the first frame of painting, then
+		if not has_started_painting:
+			start_of_painting()
+			has_started_painting = true
 		paint_terrain(delta * extraterrainui.intensity_slider.value)
+	else:
+		# If this is the end of a painting event
+		if has_started_painting:
+			end_of_painting()
+			has_started_painting = false
+
 
 # this method is called whenever a mod created tool detects a user input on the canvas
 # This function is not used in this implementation as the active elements have moved to the Scatter Tool
@@ -663,7 +682,7 @@ func on_tool_disable(tool_id):
 	areabrush.hide_brush_stroke_preview()
 	is_painting = false
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
-	if extraterrain != null && extraterrainui.show_hide_button.pressed:
+	if extraterrain != null && extraterrainui.show_hide_button.pressed && enable_baking:
 		extraterrain.bake_terrain_to_texture()
 
 
@@ -681,6 +700,66 @@ func paint_terrain(rate: float):
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null && extraterrainui.show_hide_button.pressed:
 		extraterrain.paint_terrain(Global.WorldUI.get_MousePosition(),extraterrainui.active_terrain_index, rate, extraterrainui.brush_size_slider.value)
+
+func start_of_painting():
+
+	outputlog("start_of_painting",2)
+
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		extraterrain.unbake_terrain()
+
+func end_of_painting():
+
+	outputlog("end_of_painting",2)
+
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		if extraterrain.can_bake_while_painting && enable_baking:
+			outputlog("enable_baking: " + str(enable_baking))
+			extraterrain.bake_terrain_to_texture()
+
+
+#########################################################################################################
+##
+## RESIZE FUNCTIONS
+##
+#########################################################################################################
+
+func resize_all_terrain( up_delta_sq: int, down_delta_sq: int, right_delta_sq: int, left_delta_sq: int):
+
+	outputlog("resize_all_terrain",2)
+
+	for level in Global.World.levels:
+		var extraterrain = level.get_node_or_null(NODE_NAME)
+		if extraterrain != null:
+			extraterrain.resize(up_delta_sq, down_delta_sq, right_delta_sq, left_delta_sq)
+
+func setup_resize_listener():
+
+	outputlog("setup_resize_listener",1)
+	Global.Editor.Windows["ChangeMapSize"].find_node("OkayButton").connect("pressed", self, "on_changemapsize_okay_button_pressed")
+
+func on_changemapsize_okay_button_pressed():
+
+	outputlog("on_changemapsize_okay_button_pressed",2)
+
+	var window = Global.Editor.Windows["ChangeMapSize"]
+	var up_delta_sq = window.find_node("TopSpinBox").value
+	var down_delta_sq = window.find_node("BottomSpinBox").value
+	var right_delta_sq = window.find_node("RightSpinBox").value
+	var left_delta_sq = window.find_node("LeftSpinBox").value
+
+	resize_all_terrain( up_delta_sq, down_delta_sq, right_delta_sq, left_delta_sq)
+
+	# If the current terrain is baked then unbake and rebake it
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		if enable_baking:
+			extraterrain.unbake_terrain()
+			extraterrain.bake_terrain_to_texture()
+
+
 
 #########################################################################################################
 ##
@@ -719,6 +798,30 @@ func get_semver_data(semver: String):
 		"patch": int(semver.split(".")[2].split("-")[0])
 	}
 
+
+#########################################################################################################
+##
+## APPLY PREFERENCES FUNCTION
+##
+#########################################################################################################
+
+func on_preferences_apply_pressed():
+
+	outputlog("on_preferences_apply_pressed")
+
+	var timer = Timer.new()
+	timer.autostart = false
+	timer.one_shot = true
+	Global.Editor.get_node("Windows").add_child(timer)
+
+	timer.start(0.5)
+	yield(timer,"timeout")
+	
+	enable_baking = _lib_mod_config.enable_baking
+
+	Global.Editor.get_node("Windows").remove_child(timer)
+	timer.queue_free()
+
 #########################################################################################################
 ##
 ## MAIN FUNCTION
@@ -743,6 +846,9 @@ func start() -> void:
 					.connect_to_prop("loaded", self, "logging_level")\
 					.connect_to_prop("updated", self, "logging_level")\
 			.exit()\
+			.check_button("enable_baking", true, "Enable Image Baking")\
+				.connect_to_prop("loaded", self, "enable_baking")\
+				.connect_to_prop("toggled", self, "enable_baking")\
 			.build()
 
 		var _lib_mod_meta = Global.API.ModRegistry.get_mod_info("CreepyCre._Lib").mod_meta
@@ -756,6 +862,7 @@ func start() -> void:
 														.build())
 		
 		Global.API.ModSignalingApi.connect_deferred("save_end", self, "on_save_end")
+		Global.API.PreferencesWindowApi.connect("apply_pressed", self, "on_preferences_apply_pressed")
 
 	# Load script for the ExtraTerrain class
 	ExtraTerrain = ResourceLoader.load(Global.Root + "ExtraTerrain.gd", "GDScript", true)
@@ -785,3 +892,5 @@ func start() -> void:
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null:
 		extraterrain.bake_terrain_to_texture()
+	
+	setup_resize_listener()
