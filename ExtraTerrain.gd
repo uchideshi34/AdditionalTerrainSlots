@@ -20,7 +20,6 @@ var first = true
 var normalshader = null
 var smoothshader = null
 
-
 var terrain_atlases = []  # Array of 4 atlases (one per splat)
 var terrain_atlas_tile_sizes = [] # tile size for the atlas allowing it to vary by atlas
 
@@ -358,6 +357,8 @@ func paint_terrain(mouse_position: Vector2, terrain_index: int, rate: float, bru
 	if not is_equal_approx(brush_size, brush_width * 2.0):
 		update_brush_data(brush_size)
 
+	if not painting_active:
+		start_painting()
 	# Core paint function call noting this only calls the splatImage that controls the positive channel
 	blend_towards_channel(mouse_position, terrain_index, rate)
 	mark_all_splats_modified()
@@ -748,278 +749,203 @@ func get_texture_scale(texture: Texture):
 ## BLEND TOWARDS CHANNEL FUNCTIONS
 ##
 #########################################################################################################
+# Add these class variables
+var painting_active: bool = false
+var cached_byte_arrays = []
 
-
-# Main blend towards channel algorithm
-func blend_towards_channel(mouse_position: Vector2, channel: int, rate: float):
-
-	outputlog("blend_towards_channel",3)
-	var target_splat = splatImages[int(channel / 4.0)]
-
-	# Load the byte data for all splats into a byte array
-	refresh_all_splats_byte_data()
-
-	# Mark splats as dirty 
-	mark_splat_modified(target_splat)
-
-	# Get the bounds of the brush
-	first = true
-	var min_position = (Vector2(mouse_position.x - 0.5 * brush_width, mouse_position.y - 0.5 * brush_height) / BLOB_SIZE).floor()
-	var max_position = (Vector2(mouse_position.x + 0.5 * brush_width, mouse_position.y + 0.5 * brush_height) / BLOB_SIZE).floor()
-	var min_location = Vector2(max(min_position.x,0), max(min_position.y,0))
-	var max_location = Vector2(min(max_position.x, width), min(max_position.y, height))
-
-	# For the splat locations within the brush range
-	for _i in range(min_location.x, max_location.x, 1):
-		for _j in range(min_location.y, max_location.y, 1):
-
-			# Main change entry section
-			#if first: print_complete_entry(_i, _j, "before change")
-			var position_in_brush = (Vector2(_i, _j) - min_position) * BLOB_SIZE + BLOB_OFFSET * Vector2.ONE
-			#if first: outputlog("position_in_brush: " + str(position_in_brush) + " brush_width: " + str(brush_width),2)
-			var weighted_rate = rate * _get_weight_at_brush_position(brush_data, brush_width, position_in_brush)
-			#outputlog("weighted_rate: " + str(_i) + "," + str(_j) + " : " + str(weighted_rate),2)
-			#if first: outputlog("weighted_rate: " + str(weighted_rate),2)
-			var change = _update_bytedata_with_blend(_i, _j, mouse_position / BLOB_SIZE, channel, weighted_rate)
-			#if first:
-			#	outputlog("change: at: " + str(_i) + ", " + str(_j) + " change: " + str(change),3)
-			reduce_other_channels_by_value(_i, _j, channel, change)
-			#if first: print_complete_entry(_i, _j, "final")
-			if first:
-				first = false
-	
-	# Take all the byte data and load it back into the splat image, then delete the byte data
-	refresh_all_splats_images_from_byte_data()
-
-# Gets the alpha value at the brush position 
-func _get_weight_at_brush_position(brush_data: PoolByteArray, brush_width: int, position_in_brush: Vector2):
-
-	if brush_data.size() == 0: return 1.0
-
-	if position_in_brush.y < 0 || position_in_brush.x < 0: return 0.0
-
-	var index = (int(position_in_brush.x) + int(position_in_brush.y) * brush_width) * 4 + 3
-	if index < brush_data.size():
-		return brush_data[index]/255.0
-	return 0.0
-
-# Update a single entry with a change. Rate is a value between 0 and 1.
-func _update_bytedata_with_blend(_i: int, _j: int, tex_position: Vector2, channel: int, rate: float):
-
-	var local_channel = channel % 4
-
-	if first:
-		outputlog("_update_data_with_blend: " + str(local_channel),3)
-		print_entry(_i, _j)
-	
-	var target_splat = splatImages[int(channel/4.0)]
-
-	var change = clamp(int(rate*255),0,255)
-
-	if first: outputlog("rate: " + str(rate) + " int(rate*255): " + str(int(rate*255)) + " change: " + str(change),3)
-
-	var overall_splat_total = get_overall_splat_total(_i, _j)
-	if overall_splat_total < 255:
-		change = max(255 - overall_splat_total, change)
-		if first: outputlog("correct upwards change: " + str(change),3)
-
-	var new_value = min(target_splat.get_byte_data_entry(_i,_j,local_channel) + change,255)
-	var actual_change = new_value - target_splat.get_byte_data_entry(_i,_j,local_channel)
-	if first: outputlog("new_value: " + str(new_value) + " actual_change: " + str(actual_change),3)
-	target_splat.set_byte_data_entry(_i,_j,local_channel,new_value)
-
-	if first: target_splat.print_entry(_i, _j)
-
-	return actual_change
-
-# Reduces the other channels by a value, ie the amount the main channel has increased
-func reduce_other_channels_by_value(_i: int, _j: int, channel: int, reduce_value: int):
-
-	if first:
-		outputlog("reduce_other_channels_by_value: int_value: " + str(reduce_value),3)
-	var changed_value = -1
-	var target_splat = splatImages[int(channel/4.0)]
-
-	# Make an array of all of the splat values at that _i, _j across all splats
-	var complete_entry_array = []
-	for _m in splatImages.size():
-		if first: outputlog("making entry for splat: " + str(splatImages[_m].splat_number),3)
-		var entry_array = splatImages[_m].make_array_of_splat_values(_i, _j)
-		if first: outputlog("entry_array: " + str(entry_array),3)
-		# Remove the channel that we are adding to
-		if _m == target_splat.splat_number:
-			# Store that the new value
-			changed_value = entry_array[channel % 4]
-			entry_array.remove(channel % 4)
-		complete_entry_array.append_array(entry_array.duplicate())
-
-	if first: outputlog("complete_entry_array prior to change: " + str(complete_entry_array),3)
-	# Reduce by values
-	reduce_array_in_place(complete_entry_array,reduce_value)
-	# Put the entry back again
-	complete_entry_array.insert(channel,changed_value)
-
-	# Normalise the array so that it does not total to more than 255 due to the rounding errors in reduce in place
-	normalise_entry_array(complete_entry_array, channel)
-
-	if first: outputlog("complete_entry_array after change: " + str(complete_entry_array),3)
-
-	# Fix for multiple spates
-	for _k in complete_entry_array.size():
-		if _k == channel: continue
-		# Set the relevant byte to the right value
-		if splatImages[int(_k / 4.0)].get_byte_data_entry(_i, _j, _k % 4) != complete_entry_array[_k]:
-			splatImages[int(_k / 4.0)].set_byte_data_entry(_i, _j, _k % 4, complete_entry_array[_k])
-			mark_splat_modified(int(_k / 4.0))
-
-# Correct for any errors in the reduce algorithm. Noting there shouldn't be any. This iterates at 1 at the time rather than full steps.
-func normalise_entry_array(array, channel: int):
-
-	if first: outputlog("normalise_entry_array(): array: " + str(array) + " channel: " + str(channel),3)
-
-	var total = 0
-	var non_zero = []
-	for _i in array.size():
-		total += array[_i]
-		if array[_i] > 0 && _i != channel:
-			non_zero.append(_i)
-
-	# If it is fine, then do nothing more.
-	if total == 255: return
-
-	# correction factor note that we need to account for positive and negative corrections
-	var correction = total - 255
-	var delta = 1
-	# Reverse the correction
-	if correction < 0:
-		delta = -1
-		correction = -correction
-	
-	var index = 0
-	while correction > 0 && non_zero.size() > 0:
-		index = index % non_zero.size()
-		array[non_zero[index]] -= 1
-		correction -= 1
-		if non_zero[index] == 0:
-			non_zero.remove(index)
-		else:
-			index += 1
-	
-	if correction > 0:
-		if first: outputlog("unable to fully correct: " + str(correction),3)
-
-# sorter for reducing array in place
-class MyCustomSorter:
-	static func sort_ascending(a, b):
-		return a["value"] < b["value"]
-
-# Function to reduce an array of integers by an amount
-func reduce_array_in_place(array: Array, total_reduce: int) -> void:
-
-	if first: outputlog("array: " + str(array),3)
-
-	var n = array.size()
-	if n == 0:
+# Call this when user starts painting (mouse down)
+func start_painting():
+	if painting_active:
 		return
 	
-	# Pair values with original indices
-	var indexed = []
-	for i in range(n):
-		indexed.append({"index": i, "value": float(array[i])})
+	outputlog("start_painting - loading byte data", 2)
+	var t1 = OS.get_ticks_msec()
 	
-	# Sort ascending by value using a helper function
-	indexed.sort_custom(MyCustomSorter, "sort_ascending")
+	painting_active = true
+	refresh_all_splats_byte_data()
+	
+	# Convert to regular arrays once
+	cached_byte_arrays.clear()
+	for s in splatImages.size():
+		var arr = []
+		arr.resize(splatImages[s].byte_data.size())
+		for i in range(splatImages[s].byte_data.size()):
+			arr[i] = splatImages[s].byte_data[i]
+		cached_byte_arrays.append(arr)
+	
+	# Clear the PoolByteArray references since we have the data
+	for splat in splatImages:
+		splat.byte_data.empty()
+	
+	var t2 = OS.get_ticks_msec()
+	outputlog("  loaded in %.1f ms" % (t2 - t1), 2)
 
-	if first: outputlog("indexed sorted: " + str(indexed),3)
-		
-	var remaining = total_reduce
-	var i = 0
+# Call this when user stops painting (mouse up)
+func end_painting():
+	if not painting_active:
+		return
 	
-	# Run while remaining is non-zero and while we are not on the final entry (which is invalid as it implies that we couldn't sufficiently reduce by looking ahead)
-	while remaining > 0 and i + 1 < n:
-		var count = n - i - 1 # elements remaining to reduce
-		var current_value = indexed[i]["value"]
-		var level = 0
-		# If the current value is more than zero, then use that value. This should only be true for the first element.
-		if current_value > 0:
-			# Set the level to the current value
-			level = max(current_value, 0)
-			count += 1
-		else:
+	outputlog("end_painting - clearing cache", 2)
+	
+	# Just clear the cache
+	cached_byte_arrays.clear()
+	painting_active = false
+
+# Optimized blend - uses cached arrays and writes back each frame
+func blend_towards_channel(mouse_position: Vector2, channel: int, rate: float):
+	
+	if not painting_active:
+		outputlog("ERROR: blend called without start_painting!", 0)
+		return
+	
+	var prof_start = OS.get_ticks_msec()
+	
+	var num_splats = splatImages.size()
+	var byte_arrays = cached_byte_arrays  # Use cached arrays!
+	var dirty_splats = {}
+	
+	var img_width = splatImages[0].get_width()
+	
+	# Get the bounds of the brush
+	var min_position = (Vector2(mouse_position.x - 0.5 * brush_width, mouse_position.y - 0.5 * brush_height) / BLOB_SIZE).floor()
+	var min_location = Vector2(max(min_position.x, 0), max(min_position.y, 0))
+	var max_location = Vector2(
+		min((min_position.x + brush_width / BLOB_SIZE), width),
+		min((min_position.y + brush_height / BLOB_SIZE), height)
+	)
+	
+	var start_x = int(min_location.x)
+	var end_x = int(max_location.x)
+	var start_y = int(min_location.y)
+	var end_y = int(max_location.y)
+	
+	var num_channels = num_splats * 4
+	var rate_255 = rate * 255.0
+	
+	var t3 = OS.get_ticks_msec()
+	
+	for _j in range(start_y, end_y):
+		var row_base = _j * img_width * 4
+		
+		for _i in range(start_x, end_x):
+			var pixel_idx = row_base + _i * 4
 			
-			# Default the next opportunity to very large if there are no more elements, so total_step becomes remaining.
-			var next_value = 99999
-			if i + 1 >= n:
-				next_value = 99999
-			# Or get the difference between the next element and this one.
-			else:
-				next_value = indexed[i + 1]["value"]
+			# Get brush weight (inlined)
+			var pos_x = (_i - min_position.x) * BLOB_SIZE + BLOB_OFFSET
+			var pos_y = (_j - min_position.y) * BLOB_SIZE + BLOB_OFFSET
 			
-			# Compute max we can subtract per element
-			level = max(next_value - current_value, 0)
-			if first: outputlog("level: " + str(i) + " value: " + str(level),2)
-		
-		var total_step = min(level * count, remaining)
-		
-		# Integer division per element
-		var step_per_element = int(total_step / count)
-		var leftover = int(total_step) % int(count)  # distribute remainder one by one
-		if first: outputlog(str(i) + " level: " + str(level) + " step_per_element: " + str(step_per_element) + " leftover: " + str(leftover) + " count: " + str(count) + " total_step: " + str(total_step) ,3)
-		
-		# If there is anything to do iterate through each remaining element
-		if remaining > 0 && (step_per_element > 0 || leftover > 0):
-			for j in range(i, n, 1):
-				if indexed[j]["value"] <= 0: continue
-				var reduce_amount = step_per_element
-				if leftover >= n - j:
-					indexed[j]["value"] -= 1
-					remaining -= 1
-				indexed[j]["value"] -= reduce_amount
-				remaining -= reduce_amount
-				if remaining <= 0:
-					break
-		
-		# Move past elements that hit zero
-		while i < n:
-			#if first: outputlog("skipping as zero: " + str(i) + " value: " + str(indexed[i]["value"]),2)
-			if i + 1 < n:
-				#if first: outputlog("i + 1 < n: " + str(i + 1 < n),2)
-				if indexed[i+1]["value"] > 0:
-					break
-				i += 1
-			else:
-				break
+			if pos_y < 0 or pos_x < 0:
+				continue
 			
-	if first: outputlog("indexed after reduction: " + str(indexed),3)
-
-	# Write results back
-	for item in indexed:
-		array[item["index"]] = int(item["value"])
-
-	if first: outputlog("final array: " + str(array),3)
-
-func get_overall_splat_total(_i: int, _j: int):
-
-	if first: outputlog("get_overall_splat_total",3)
-	var total = 0
-
-	for _m in splatImages.size():
-		total += splatImages[_m].get_splat_total(_i, _j)
+			var brush_idx = (int(pos_x) + int(pos_y) * brush_width) * 4 + 3
+			if brush_idx >= brush_data.size():
+				continue
+			
+			var weight = brush_data[brush_idx] / 255.0
+			if weight <= 0:
+				continue
+			
+			var change = int(rate_255 * weight)
+			if change == 0:
+				continue
+			
+			# Read all channels
+			var arr0 = byte_arrays[0]
+			var ch0 = arr0[pixel_idx]
+			var ch1 = arr0[pixel_idx + 1]
+			var ch2 = arr0[pixel_idx + 2]
+			var ch3 = arr0[pixel_idx + 3]
+			var total = ch0 + ch1 + ch2 + ch3
+			
+			var channels = [ch0, ch1, ch2, ch3]
+			if num_splats > 1:
+				for s in range(1, num_splats):
+					var arr_s = byte_arrays[s]
+					var c0 = arr_s[pixel_idx]
+					var c1 = arr_s[pixel_idx + 1]
+					var c2 = arr_s[pixel_idx + 2]
+					var c3 = arr_s[pixel_idx + 3]
+					channels.append(c0)
+					channels.append(c1)
+					channels.append(c2)
+					channels.append(c3)
+					total += c0 + c1 + c2 + c3
+			
+			var old_value = channels[channel]
+			var new_value = clamp(old_value + change, 0, 255)
+			
+			if total < 255:
+				var deficit = 255 - total
+				new_value = clamp(old_value + max(change, deficit), 0, 255)
+			
+			var actual_change = new_value - old_value
+			if actual_change == 0:
+				continue
+			
+			channels[channel] = new_value
+			
+			# Proportional reduction
+			var to_reduce = actual_change
+			var other_total = total - old_value
+			
+			if other_total > 0:
+				for i in num_channels:
+					if i == channel or channels[i] == 0:
+						continue
+					var proportion = float(channels[i]) / float(other_total)
+					var reduce_amount = min(int(ceil(to_reduce * proportion)), channels[i])
+					channels[i] -= reduce_amount
+			
+			# Write back and track changes
+			var changed0 = (arr0[pixel_idx] != channels[0] or arr0[pixel_idx + 1] != channels[1] or 
+			                arr0[pixel_idx + 2] != channels[2] or arr0[pixel_idx + 3] != channels[3])
+			
+			arr0[pixel_idx] = channels[0]
+			arr0[pixel_idx + 1] = channels[1]
+			arr0[pixel_idx + 2] = channels[2]
+			arr0[pixel_idx + 3] = channels[3]
+			
+			if changed0:
+				dirty_splats[0] = true
+			
+			if num_splats > 1:
+				var idx = 4
+				for s in range(1, num_splats):
+					var arr_s = byte_arrays[s]
+					var changed_s = (arr_s[pixel_idx] != channels[idx] or arr_s[pixel_idx + 1] != channels[idx + 1] or 
+					                 arr_s[pixel_idx + 2] != channels[idx + 2] or arr_s[pixel_idx + 3] != channels[idx + 3])
+					
+					arr_s[pixel_idx] = channels[idx]
+					arr_s[pixel_idx + 1] = channels[idx + 1]
+					arr_s[pixel_idx + 2] = channels[idx + 2]
+					arr_s[pixel_idx + 3] = channels[idx + 3]
+					
+					if changed_s:
+						dirty_splats[s] = true
+					
+					idx += 4
 	
-	if first: outputlog("total: "+ str(total),3)
-	return total
-
-func print_complete_entry(_i, _j, extra_desc: String = ""):
-
-	outputlog("print_complete_entry: " + str(_i) + ", " + str(_j),3)
-
-	var output_str = str(extra_desc) + " entry: "
-
-	for _m in splatImages.size():
-		for _k in 4:
-			output_str += str(splatImages[_m].get_byte_data_entry(_i,_j,_k)) + " "
+	var t4 = OS.get_ticks_msec()
 	
-	outputlog(output_str,3)
+	# Write back to GPU (only dirty splats)
+	var t5 = OS.get_ticks_msec()
+	for s in dirty_splats.keys():
+		var pool = PoolByteArray()
+		pool.resize(byte_arrays[s].size())
+		for i in range(byte_arrays[s].size()):
+			pool.set(i, byte_arrays[s][i])
+		
+		splatImages[s].create_from_data(
+			splatImages[s].get_width(),
+			splatImages[s].get_height(),
+			false,
+			Image.FORMAT_RGBA8,
+			pool
+		)
+	var t6 = OS.get_ticks_msec()
+	
+	var prof_end = OS.get_ticks_msec()
+	outputlog("blend: total=%.1fms loop=%.1fms rebuild=%.1fms" % [prof_end - prof_start, t4 - t3, t6 - t5], 3)
 
 # Function to cycle through each splatimage and set its byte data from the image value
 func refresh_all_splats_byte_data():
@@ -1028,13 +954,6 @@ func refresh_all_splats_byte_data():
 
 	for _i in splatImages.size():
 		splatImages[_i].load_byte_data()
-
-# Update all of the splats image based on the byte data
-func refresh_all_splats_images_from_byte_data():
-
-	for _i in splatImages.size():
-		splatImages[_i].create_from_data(splatImages[_i].get_width(), splatImages[_i].get_height(), false, Image.FORMAT_RGBA8, splatImages[_i].byte_data)
-		splatImages[_i].byte_data.empty()
 
 #########################################################################################################
 ##

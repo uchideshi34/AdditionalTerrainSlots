@@ -25,6 +25,9 @@ var has_started_painting = false
 
 var enable_baking = true
 
+var paint_on_frame_number = 1
+var frame_count = 0
+
 const NODE_NAME = "ExtraTerrain987234"
 const INTENSITY_CONSTANT = 0.25
 
@@ -639,11 +642,15 @@ func on_save_end():
 func update(delta : float):
 
 	if tool_is_active && is_painting:
-		# If this is the first frame of painting, then
-		if not has_started_painting:
-			start_of_painting()
-			has_started_painting = true
-		paint_terrain(delta * extraterrainui.intensity_slider.value)
+		frame_count += 1
+		if frame_count % paint_on_frame_number == 0:
+			outputlog("delta: " + str(delta) + " frame_count: " + str(frame_count),2)
+			# If this is the first frame of painting, then
+			if not has_started_painting:
+				start_of_painting()
+				has_started_painting = true
+			paint_terrain(frame_count * 0.05 * extraterrainui.intensity_slider.value)
+			frame_count = 0
 	else:
 		# If this is the end of a painting event
 		if has_started_painting:
@@ -715,6 +722,7 @@ func end_of_painting():
 
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null:
+		extraterrain.end_painting()
 		if extraterrain.can_bake_while_painting && enable_baking:
 			outputlog("enable_baking: " + str(enable_baking))
 			extraterrain.bake_terrain_to_texture()
@@ -828,6 +836,11 @@ func on_preferences_apply_pressed():
 ##
 #########################################################################################################
 
+# Function to update the config label
+func update_config_label(value, label: Label):
+
+	label.text =  "%0d" % value
+
 # Main Script
 func start() -> void:
 
@@ -849,6 +862,21 @@ func start() -> void:
 			.check_button("enable_baking", true, "Enable Image Baking")\
 				.connect_to_prop("loaded", self, "enable_baking")\
 				.connect_to_prop("toggled", self, "enable_baking")\
+			.h_box_container().enter()\
+				.label("Paint Every N Frames: ")\
+				.label().ref("paint_frame_slider_label")\
+				.label(" ")\
+				.h_slider("paint_frame_slider",1)\
+					.with("max_value",5)\
+					.with("min_value",1)\
+					.with("step",1)\
+					.connect_current("loaded", self, "update_config_label", [_lib_config_builder.get_ref("paint_frame_slider_label")])\
+					.connect_current("value_changed", self, "update_config_label", [_lib_config_builder.get_ref("paint_frame_slider_label")])\
+					.connect_to_prop("loaded", self, paint_on_frame_number)\
+					.connect_to_prop("value_changed", self, paint_on_frame_number)\
+					.size_flags_h(Control.SIZE_EXPAND_FILL)\
+					.size_flags_v(Control.SIZE_FILL)\
+			.exit()\
 			.build()
 
 		var _lib_mod_meta = Global.API.ModRegistry.get_mod_info("CreepyCre._Lib").mod_meta
