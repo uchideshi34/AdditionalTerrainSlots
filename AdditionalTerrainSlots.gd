@@ -241,6 +241,8 @@ func initialise_extraterrain(level):
 		extraterrain.update_splats()
 		extraterrain.brush_image = safe_load_texture("res://textures/brushes/soft_circle.png")
 		extraterrain.update_brush_data(8 * 0.5)
+		extraterrain.connect("record_history", self, "create_update_custom_history")
+
 		outputlog("initialise_extraterrain: complete",2)
 
 func _on_activate_terrain_button_pressed(button_pressed: bool):
@@ -251,9 +253,13 @@ func _on_activate_terrain_button_pressed(button_pressed: bool):
 		if child != activate_terrain_button:
 			child.visible = button_pressed
 
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	# If there is an active extraterrain then show/hide it
-	if Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME) != null:
-		Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME).visible = button_pressed
+	if extraterrain != null:
+		Global.World.GetCurrentLevel().remove_child(extraterrain)
+		extraterrain.queue_free()
+
+		#extraterrain.visible = button_pressed
 	# Otherwise initialise it
 	elif button_pressed:
 		initialise_extraterrain(Global.World.GetCurrentLevel())
@@ -692,6 +698,39 @@ func on_tool_disable(tool_id):
 	if extraterrain != null && extraterrainui.show_hide_button.pressed && enable_baking:
 		extraterrain.bake_terrain_to_texture()
 
+#########################################################################################################
+##
+## HISTORY FUNCTIONS
+##
+#########################################################################################################
+
+# Create custom history record, called when a colour preset is selected, the color picker is closed, or a slider timer finishes
+func create_update_custom_history(extraterrain, history_record: Dictionary):
+
+	var record_script
+	outputlog("create_update_custom_history",2)
+
+	# If there is no data in the record dictionary, then do nothing. This might fired from the "main" location
+	if not (history_record["before_splats_data"].size() > 0 && history_record["after_splats_data"].size() > 0):
+		outputlog("no history data available",2)
+		return
+
+	# Create a new record if one is needed or simply update the existing one
+	record_script = Script.InstanceReference("library/custom_history_record.gd")
+
+	# If this is null for any reason then return to avoid a crash
+	if record_script == null:
+		outputlog("record_script is null",2)
+		return
+
+	record_script.main_script = self
+	record_script.history_record = history_record.duplicate(true)
+
+	# If this is a new action then create a new custom record
+	var record = Global.Editor.History.CreateCustomRecord(record_script)
+
+	extraterrain.history_record = {"level": null, "splat_size": Vector2.ZERO, "before_splats_data": [], "after_splats_data": []}
+	
 
 #########################################################################################################
 ##

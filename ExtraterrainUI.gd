@@ -118,6 +118,43 @@ func load_image_texture(texture_path: String):
 	
 	return texture
 
+# Function to return the custom asset thumbnail url from a resource path
+func find_thumbnail_url(resource_path: String):
+
+	var thumbnail_extension = ".png"
+	var thumbnail_url
+
+	thumbnail_url = "user://.thumbnails/" + resource_path.md5_text() + thumbnail_extension
+
+	# Check if the thumbnail url is valid, if not create a thumbnail url for the embedded thumbnail
+	if not ResourceLoader.exists(thumbnail_url):
+		thumbnail_url = "res://packs/" + resource_path.split('/')[3] + "/thumbnails/" + resource_path.md5_text() + thumbnail_extension
+	# If the thumbnail can't be found then return null
+	if not ResourceLoader.exists(thumbnail_url):
+		thumbnail_url = null
+		outputlog("thumbnail not found: " + str(thumbnail_url),2)
+
+	return thumbnail_url
+
+func downscale_and_remove_alpha(tex: ImageTexture) -> ImageTexture:
+	if tex == null:
+		return null
+
+	# Get CPU image
+	var img: Image = tex.get_data()
+
+	# Resize to 32x32
+	img.resize(64, 64, Image.INTERPOLATE_LANCZOS)
+
+	# Convert to RGB (drops alpha)
+	img.convert(Image.FORMAT_RGB8)
+
+	# Upload back to GPU
+	var out := ImageTexture.new()
+	out.create_from_image(img, Texture.FLAG_FILTER)
+
+	return out
+
 
 #########################################################################################################
 ##
@@ -140,7 +177,7 @@ func _init(parent: Control = null, global_ref = null, index: int = -1):
 	var slider_label = Label.new()
 	slider_label.text = "Brush Size"
 	parent.add_child(slider_label)
-	brush_size_slider = NewHSlider.new(parent, 8, 1, 25, 1, false, 0)
+	brush_size_slider = NewHSlider.new(parent, 8, 1, 12, 1, false, 0)
 
 	var intensity_label = Label.new()
 	intensity_label.text = "Intensity"
@@ -294,7 +331,7 @@ func on_terrainwindow_pack_list_item_selected(index: int):
 	for terrain_path in terrain_list:
 		var entry = find_texture_name_and_pack(terrain_path)
 		if entry["pack_id"] == pack_id || pack_id == "all":
-			terrainwindow_texturemenu.add_item(entry["texture_name"], safe_load_texture(terrain_path))
+			terrainwindow_texturemenu.add_item(entry["texture_name"], downscale_and_remove_alpha(safe_load_texture(find_thumbnail_url(terrain_path))))
 			terrainwindow_texturemenu.set_item_metadata(terrainwindow_texturemenu.get_item_count()-1, terrain_path)
 
 func on_terrainwindow_terrain_item_selected(index: int):
@@ -323,7 +360,7 @@ func on_new_search_text(search_text: String):
 	for terrain_path in terrain_list:
 		var entry = find_texture_name_and_pack(terrain_path)
 		if (entry["pack_id"] == pack_id || pack_id == "all") && is_valid_search_result(entry["texture_name"], search_text):
-			terrainwindow_texturemenu.add_item(entry["texture_name"], safe_load_texture(terrain_path))
+			terrainwindow_texturemenu.add_item(entry["texture_name"], downscale_and_remove_alpha(safe_load_texture(find_thumbnail_url(terrain_path))))
 			terrainwindow_texturemenu.set_item_metadata(terrainwindow_texturemenu.get_item_count()-1, terrain_path)
 
 # Algorithm to check if the search term matches the string

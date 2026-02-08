@@ -38,6 +38,8 @@ const MAX_TEXTURE_PIXEL_SIZE = 2048 * 1.5 # Strictly speaking this isn't a hard 
 const ALTAS_COLUMNS_NUMBER = 4
 const NODE_NAME = "ExtraTerrain987234"
 
+signal record_history
+
 # Logging Functions
 const ENABLE_LOGGING = true
 var logging_level = 2
@@ -128,12 +130,21 @@ func poolbytearray_to_string(arr: PoolByteArray) -> String:
 	
 	var result = "PoolByteArray( "
 	for i in range(arr.size()):
+		if i % 10 == 0: outputlog("record: " + str(i),2)
 		if i > 0:
 			result += ", "
 		result += str(arr[i])
 	result += " )"
 	
 	return result
+
+# Encode PoolByteArray to base64 string
+func poolbytearray_to_base64string(arr: PoolByteArray) -> String:
+	return Marshalls.raw_to_base64(arr)
+
+# Decode base64 string back to PoolByteArray
+func base64string_to_poolbytearray(s: String) -> PoolByteArray:
+	return Marshalls.base64_to_raw(s)
 
 func string_to_poolbytearray(s: String) -> PoolByteArray:
 	var result = PoolByteArray()
@@ -361,7 +372,7 @@ func paint_terrain(mouse_position: Vector2, terrain_index: int, rate: float, bru
 		start_painting()
 	# Core paint function call noting this only calls the splatImage that controls the positive channel
 	blend_towards_channel(mouse_position, terrain_index, rate)
-	mark_all_splats_modified()
+	#mark_all_splats_modified()
 	update_splats()
 
 func set_smoothblending(button_pressed: bool):
@@ -370,6 +381,58 @@ func set_smoothblending(button_pressed: bool):
 
 	smoothblending = button_pressed
 	material.set_shader_param("smoothblending", smoothblending)
+
+# Add these class variables
+var painting_active: bool = false
+var cached_byte_arrays = []
+var history_record = {"level": null, "splat_size": Vector2.ZERO, "before_splats_data": [], "after_splats_data": []}
+
+# Call this when user starts painting (mouse down)
+func start_painting():
+	if painting_active:
+		return
+	
+	outputlog("start_painting - loading byte data", 2)
+	var t1 = OS.get_ticks_msec()
+	
+	painting_active = true
+	refresh_all_splats_byte_data()
+	history_record["splat_size"] = Vector2(width, height)
+	history_record["level"] = level
+	
+	# Convert to regular arrays once
+	cached_byte_arrays.clear()
+	for s in splatImages.size():
+		var arr = []
+		arr.resize(splatImages[s].byte_data.size())
+		for i in range(splatImages[s].byte_data.size()):
+			arr[i] = splatImages[s].byte_data[i]
+		cached_byte_arrays.append(arr)
+		history_record["before_splats_data"].append(splatImages[s].byte_data)
+	
+	# Clear the PoolByteArray references since we have the data
+	for splat in splatImages:
+		splat.byte_data.empty()
+	
+	var t2 = OS.get_ticks_msec()
+	outputlog("  loaded in %.1f ms" % (t2 - t1), 2)
+
+# Call this when user stops painting (mouse up)
+func end_painting():
+	if not painting_active:
+		return
+	
+	outputlog("end_painting - clearing cache", 2)
+
+	if history_record["before_splats_data"].size() > 0:
+		for _i in splatImages.size():
+			history_record["after_splats_data"].append(splatImages[_i].get_data())
+	
+	self.emit_signal("record_history", self, history_record.duplicate(true))
+
+	# Just clear the cache
+	cached_byte_arrays.clear()
+	painting_active = false
 
 #########################################################################################################
 ##
@@ -749,47 +812,7 @@ func get_texture_scale(texture: Texture):
 ## BLEND TOWARDS CHANNEL FUNCTIONS
 ##
 #########################################################################################################
-# Add these class variables
-var painting_active: bool = false
-var cached_byte_arrays = []
 
-# Call this when user starts painting (mouse down)
-func start_painting():
-	if painting_active:
-		return
-	
-	outputlog("start_painting - loading byte data", 2)
-	var t1 = OS.get_ticks_msec()
-	
-	painting_active = true
-	refresh_all_splats_byte_data()
-	
-	# Convert to regular arrays once
-	cached_byte_arrays.clear()
-	for s in splatImages.size():
-		var arr = []
-		arr.resize(splatImages[s].byte_data.size())
-		for i in range(splatImages[s].byte_data.size()):
-			arr[i] = splatImages[s].byte_data[i]
-		cached_byte_arrays.append(arr)
-	
-	# Clear the PoolByteArray references since we have the data
-	for splat in splatImages:
-		splat.byte_data.empty()
-	
-	var t2 = OS.get_ticks_msec()
-	outputlog("  loaded in %.1f ms" % (t2 - t1), 2)
-
-# Call this when user stops painting (mouse up)
-func end_painting():
-	if not painting_active:
-		return
-	
-	outputlog("end_painting - clearing cache", 2)
-	
-	# Just clear the cache
-	cached_byte_arrays.clear()
-	painting_active = false
 
 # Optimized blend - uses cached arrays and writes back each frame
 func blend_towards_channel(mouse_position: Vector2, channel: int, rate: float):
@@ -942,6 +965,8 @@ func blend_towards_channel(mouse_position: Vector2, channel: int, rate: float):
 			Image.FORMAT_RGBA8,
 			pool
 		)
+		mark_splat_modified(s)
+
 	var t6 = OS.get_ticks_msec()
 	
 	var prof_end = OS.get_ticks_msec()
@@ -1087,8 +1112,9 @@ func get_data_record() -> Dictionary:
 
 	# If we need to update the splat records then create them from the splat images
 	for _i in num_splats:
+		outputlog("creating record for splat id: " + str(_i),2)
 		if splat_is_modified[_i]:
-			data_record["splats"]["splat"+str(_i)] = poolbytearray_to_string(splatImages[_i].get_data())
+			data_record["splats"]["splat"+str(_i)] = poolbytearray_to_base64string(splatImages[_i].get_data())
 				
 	time_function_end(time_record)
 	
@@ -1112,7 +1138,7 @@ func load_from_data_record(data_record: Dictionary):
 	for entry in data_record["splats"].keys():
 
 		var splat_idx = int(entry.replace("splat",""))
-		splatImages[splat_idx].create_from_data(self.width, self.height, false, Image.FORMAT_RGBA8, string_to_poolbytearray(data_record["splats"][entry]))
+		splatImages[splat_idx].create_from_data(self.width, self.height, false, Image.FORMAT_RGBA8, base64string_to_poolbytearray(data_record["splats"][entry]))
 	
 	build_all_atlases()
 	update_splats()
