@@ -22,6 +22,7 @@ var areabrush
 var tool_is_active = false
 var is_painting = false
 var has_started_painting = false
+var clear_cache_after_painting = false
 
 var enable_baking = true
 
@@ -228,14 +229,12 @@ func initialise_extraterrain(level):
 		outputlog("extraterrain: " + str(extraterrain),2)
 		extraterrain.material.shader = ResourceLoader.load(Global.Root + "shaders/terrain.shader","Shader",true)
 		extraterrain.textures = []
-		outputlog("got here",2)
 		for _i in extraterrainui.vbox.get_child_count():
 			outputlog("_i: " + str(_i),2)
 			extraterrain.textures.append(null)
 			outputlog("append_null: ",2)
 			if extraterrainui.get_terrain_entry(_i) != null:
 				extraterrain.set_terrain_texture(extraterrainui.get_terrain_entry(_i).texture_path, _i, false)
-		outputlog("got here2",2)
 		extraterrain.set_splat_number(extraterrainui.vbox.get_child_count()/4)
 		extraterrain.build_all_atlases()
 		extraterrain.update_splats()
@@ -753,6 +752,7 @@ func start_of_painting():
 
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null:
+		extraterrain.clear_cache_after_painting = clear_cache_after_painting
 		extraterrain.unbake_terrain()
 
 func end_of_painting():
@@ -761,6 +761,11 @@ func end_of_painting():
 
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null:
+		# Wait one more frame than the render
+		for _i in extraterrain.num_splats + 1:
+			outputlog("_i: " +str(_i))
+			yield(extraterrain.get_tree(), "idle_frame")
+
 		extraterrain.end_painting()
 		if extraterrain.can_bake_while_painting && enable_baking:
 			outputlog("enable_baking: " + str(enable_baking))
@@ -901,6 +906,9 @@ func start() -> void:
 			.check_button("enable_baking", true, "Enable Image Baking")\
 				.connect_to_prop("loaded", self, "enable_baking")\
 				.connect_to_prop("toggled", self, "enable_baking")\
+			.check_button("clear_cache_after_painting", true, "Clear Cache After Paint Event")\
+				.connect_to_prop("loaded", self, "clear_cache_after_painting")\
+				.connect_to_prop("toggled", self, "clear_cache_after_painting")\
 			.h_box_container().enter()\
 				.label("Paint Every N Frames: ")\
 				.label().ref("paint_frame_slider_label")\

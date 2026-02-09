@@ -14,6 +14,7 @@ var brush_image = null
 var brush_data: PoolByteArray = []
 var brush_width = 0
 var brush_height = 0
+var brush_tex = null
 
 var first = true
 
@@ -130,7 +131,6 @@ func poolbytearray_to_string(arr: PoolByteArray) -> String:
 	
 	var result = "PoolByteArray( "
 	for i in range(arr.size()):
-		if i % 10 == 0: outputlog("record: " + str(i),2)
 		if i > 0:
 			result += ", "
 		result += str(arr[i])
@@ -371,8 +371,13 @@ func paint_terrain(mouse_position: Vector2, terrain_index: int, rate: float, bru
 	if not painting_active:
 		start_painting()
 	# Core paint function call noting this only calls the splatImage that controls the positive channel
-	blend_towards_channel(mouse_position, terrain_index, rate)
+	#blend_towards_channel(mouse_position, terrain_index, rate)
+	blend_towards_channel_gpu_debug(mouse_position, terrain_index, rate)
+
 	#mark_all_splats_modified()
+
+	for splat_idx in range(num_splats+1):
+		yield(get_tree(), "idle_frame")
 	update_splats()
 
 func set_smoothblending(button_pressed: bool):
@@ -385,10 +390,12 @@ func set_smoothblending(button_pressed: bool):
 # Add these class variables
 var painting_active: bool = false
 var cached_byte_arrays = []
+var clear_cache_after_painting = false
 var history_record = {"level": null, "splat_size": Vector2.ZERO, "before_splats_data": [], "after_splats_data": []}
 
 # Call this when user starts painting (mouse down)
 func start_painting():
+	
 	if painting_active:
 		return
 	
@@ -401,13 +408,16 @@ func start_painting():
 	history_record["level"] = level
 	
 	# Convert to regular arrays once
-	cached_byte_arrays.clear()
+	if clear_cache_after_painting || cached_byte_arrays.size() == 0:
+		cached_byte_arrays.clear()
+		for s in splatImages.size():
+			var arr = []
+			arr.resize(splatImages[s].byte_data.size())
+			for i in range(splatImages[s].byte_data.size()):
+				arr[i] = splatImages[s].byte_data[i]
+			cached_byte_arrays.append(arr)
+	
 	for s in splatImages.size():
-		var arr = []
-		arr.resize(splatImages[s].byte_data.size())
-		for i in range(splatImages[s].byte_data.size()):
-			arr[i] = splatImages[s].byte_data[i]
-		cached_byte_arrays.append(arr)
 		history_record["before_splats_data"].append(splatImages[s].byte_data)
 	
 	# Clear the PoolByteArray references since we have the data
@@ -430,8 +440,9 @@ func end_painting():
 	
 	self.emit_signal("record_history", self, history_record.duplicate(true))
 
-	# Just clear the cache
-	cached_byte_arrays.clear()
+	if clear_cache_after_painting:
+		cached_byte_arrays.clear()
+
 	painting_active = false
 
 #########################################################################################################
@@ -451,6 +462,8 @@ func update_brush_data(scale: float):
 	brush_data = scaled_brush.get_data()
 	brush_width = scaled_brush.get_width()
 	brush_height = scaled_brush.get_height()
+	brush_tex = ImageTexture.new()
+	brush_tex.create_from_image(scaled_brush,4)
 
 #########################################################################################################
 ##
@@ -812,6 +825,403 @@ func get_texture_scale(texture: Texture):
 ## BLEND TOWARDS CHANNEL FUNCTIONS
 ##
 #########################################################################################################
+
+var paint_viewport = null
+var paint_material = null
+var paintshader = null
+var paint_mesh = null
+
+func get_paint_shader_code() -> String:
+	return """
+shader_type canvas_item;
+
+// Input splat textures
+uniform sampler2D splat0;
+uniform sampler2D splat1;
+uniform sampler2D splat2;
+uniform sampler2D splat3;
+
+// Brush texture (alpha channel is weight)
+uniform sampler2D brush_texture;
+
+// Brush parameters
+uniform vec2 brush_position;  // In pixel coordinates
+uniform vec2 brush_size;      // In pixels
+uniform float paint_rate;     // 0.0 to 1.0
+uniform int target_channel;   // 0-15 (which channel to paint)
+uniform int output_splat;     // Which splat to output (0-3)
+uniform vec2 map_size;        // Width, height in pixels
+
+void fragment() {
+	vec2 pixel_pos = UV * map_size;
+	
+	// Calculate brush UV
+	vec2 brush_uv = (pixel_pos - brush_position + brush_size * 0.5) / brush_size;
+	
+	// Get brush weight (default to 0 if outside brush)
+	float weight = 0.0;
+	if (brush_uv.x >= 0.0 && brush_uv.x <= 1.0 && brush_uv.y >= 0.0 && brush_uv.y <= 1.0) {
+		weight = texture(brush_texture, brush_uv).a;
+	}
+	
+	// Read all current channels
+	vec4 s0 = texture(splat0, UV);
+	vec4 s1 = texture(splat1, UV);
+	vec4 s2 = texture(splat2, UV);
+	vec4 s3 = texture(splat3, UV);
+	
+	// If no brush weight, just pass through unchanged
+	if (weight <= 0.0) {
+		if (output_splat == 0) COLOR = s0;
+		else if (output_splat == 1) COLOR = s1;
+		else if (output_splat == 2) COLOR = s2;
+		else COLOR = s3;
+		COLOR = vec4(0.0);
+		return;
+	}
+	
+	// Calculate change amount
+	float change = paint_rate * weight;
+	
+	// Pack into array
+	float channels[16];
+	channels[0] = s0.r; channels[1] = s0.g; channels[2] = s0.b; channels[3] = s0.a;
+	channels[4] = s1.r; channels[5] = s1.g; channels[6] = s1.b; channels[7] = s1.a;
+	channels[8] = s2.r; channels[9] = s2.g; channels[10] = s2.b; channels[11] = s2.a;
+	channels[12] = s3.r; channels[13] = s3.g; channels[14] = s3.b; channels[15] = s3.a;
+	
+	// Calculate total
+	float total = 0.0;
+	for (int i = 0; i < 16; i++) {
+		total += channels[i];
+	}
+	
+	// Increase target channel
+	float old_value = channels[target_channel];
+	float new_value = clamp(old_value + change, 0.0, 1.0);
+	
+	// Handle deficit
+	if (total < 1.0) {
+		float deficit = 1.0 - total;
+		new_value = clamp(old_value + max(change, deficit), 0.0, 1.0);
+	}
+	
+	float actual_change = new_value - old_value;
+	channels[target_channel] = new_value;
+	
+	// Reduce other channels proportionally
+	if (actual_change > 0.0) {
+		float other_total = total - old_value;
+		if (other_total > 0.0) {
+			for (int i = 0; i < 16; i++) {
+				if (i != target_channel && channels[i] > 0.0) {
+					float proportion = channels[i] / other_total;
+					float reduce = min(actual_change * proportion, channels[i]);
+					channels[i] -= reduce;
+				}
+			}
+		}
+	}
+	
+	// Output the requested splat
+	if (output_splat == 0) {
+		COLOR = vec4(channels[0], channels[1], channels[2], channels[3]);
+	} else if (output_splat == 1) {
+		COLOR = vec4(channels[4], channels[5], channels[6], channels[7]);
+	} else if (output_splat == 2) {
+		COLOR = vec4(channels[8], channels[9], channels[10], channels[11]);
+	} else {
+		COLOR = vec4(channels[12], channels[13], channels[14], channels[15]);
+	}
+	// Output the requested splat
+	if (output_splat == 0) {
+		COLOR = vec4(1.0 - weight, 0.0, 0.0, weight);
+	} else if (output_splat == 1) {
+		COLOR = vec4(0.0);
+	} else if (output_splat == 2) {
+		COLOR = vec4(0.0);
+	} else {
+		COLOR = vec4(0.0);
+	}
+}
+"""
+func get_paint_shader_code_debug() -> String:
+	return """
+shader_type canvas_item;
+
+uniform sampler2D splat0;
+uniform sampler2D splat1;
+uniform sampler2D splat2;
+uniform sampler2D splat3;
+uniform sampler2D brush_texture;
+
+uniform vec2 brush_position;
+uniform vec2 brush_size;
+uniform float paint_rate;
+uniform int target_channel;
+uniform int output_splat;
+uniform vec2 map_size;
+
+void fragment() {
+	// UV is in 0-1 range for the REGION
+	// We need to map it to the correct position in the full splat texture
+	
+	// This is handled by ARRAY_TEX_UV in the mesh - UV should already be correct
+	
+	// Sample the splat at current UV
+	vec4 s0 = texture(splat0, UV);
+	vec4 s1 = texture(splat1, UV);
+	vec4 s2 = texture(splat2, UV);
+	vec4 s3 = texture(splat3, UV);
+	
+	// DEBUG: Just pass through the input for now
+	if (output_splat == 0) {
+		COLOR = s0;
+		return;
+	} else if (output_splat == 1) {
+		COLOR = s1;
+		return;
+	} else if (output_splat == 2) {
+		COLOR = s2;
+		return;
+	} else {
+		COLOR = s3;
+		return;
+	}
+}
+"""
+
+
+func blend_towards_channel_gpu_debug(mouse_position: Vector2, channel: int, rate: float):
+
+	var prof_start = OS.get_ticks_msec()
+	
+	# DEBUG: Check what's in splatImages
+	for i in range(num_splats):
+		if splatImages[i]:
+			splatImages[i].lock()
+			var sample = splatImages[i].get_pixel(int(width/2), int(height/2))
+			splatImages[i].unlock()
+			outputlog("  splatImage[%d] center pixel: %s" % [i, sample], 2)
+	
+	# Calculate brush bounds in world pixel coordinates
+	var brush_min_world = mouse_position - Vector2(brush_width, brush_height) * 0.5
+	var brush_max_world = mouse_position + Vector2(brush_width, brush_height) * 0.5
+	
+	# Convert to blob coordinates (splat image coordinates)
+	var brush_min_blob = (brush_min_world / BLOB_SIZE).floor()
+	var brush_max_blob = (brush_max_world / BLOB_SIZE).ceil()
+	
+	# Clamp to splat image bounds
+	brush_min_blob.x = clamp(brush_min_blob.x, 0, width)
+	brush_min_blob.y = clamp(brush_min_blob.y, 0, height)
+	brush_max_blob.x = clamp(brush_max_blob.x, 0, width)
+	brush_max_blob.y = clamp(brush_max_blob.y, 0, height)
+	
+	var region_size_blob = brush_max_blob - brush_min_blob
+	
+	# Skip if region is too small
+	if region_size_blob.x < 1 or region_size_blob.y < 1:
+		return
+	
+	# Create/resize viewport to match brush region in blob coordinates
+	if not paint_viewport:
+		setup_gpu_painting()
+	
+	paint_viewport.size = region_size_blob
+	
+	# Update mesh to match region
+	var map_size_blob = Vector2(width, height)
+	update_paint_mesh_for_region(brush_min_blob, region_size_blob, map_size_blob)
+
+
+	# Create brush texture if needed
+	if not paint_material.get_shader_param("brush_texture"):
+		var brush_tex = create_brush_texture()
+		paint_material.set_shader_param("brush_texture", brush_tex)
+	
+	# Check for shader errors
+	if paint_material.shader.has_method("get_code"):
+		print("Shader code length: ", paint_material.shader.code.length())
+	
+	paint_material.shader.code = get_paint_shader_code_debug()
+
+	if paint_material.shader.has_method("get_code"):
+		print("Shader code length: ", paint_material.shader.code.length())
+	
+	# Create dummy texture for empty slots
+	var dummy = make_dummy_texture()
+	
+	# Create textures from current splatImages (the actual data)
+	var splat_tex_0 = ImageTexture.new()
+	var splat_tex_1 = ImageTexture.new()
+	var splat_tex_2 = ImageTexture.new()
+	var splat_tex_3 = ImageTexture.new()
+	
+	if num_splats > 0 and splatImages[0] != null:
+		splat_tex_0.create_from_image(splatImages[0], Texture.FLAG_FILTER)
+		# DEBUG: Verify texture was created
+		outputlog("  splat_tex_0 size: %s" % [splat_tex_0.get_size()], 2)
+	else:
+		splat_tex_0 = dummy
+	
+	if num_splats > 1 and splatImages[1] != null:
+		splat_tex_1.create_from_image(splatImages[1], Texture.FLAG_FILTER)
+	else:
+		splat_tex_1 = dummy
+	
+	if num_splats > 2 and splatImages[2] != null:
+		splat_tex_2.create_from_image(splatImages[2], Texture.FLAG_FILTER)
+	else:
+		splat_tex_2 = dummy
+	
+	if num_splats > 3 and splatImages[3] != null:
+		splat_tex_3.create_from_image(splatImages[3], Texture.FLAG_FILTER)
+	else:
+		splat_tex_3 = dummy
+	
+	# Set shader parameters with actual splat data
+	paint_material.set_shader_param("splat0", splat_tex_0)
+	paint_material.set_shader_param("splat1", splat_tex_1)
+	paint_material.set_shader_param("splat2", splat_tex_2)
+	paint_material.set_shader_param("splat3", splat_tex_3)
+	
+	paint_material.set_shader_param("brush_position", mouse_position)
+	paint_material.set_shader_param("brush_size", Vector2(brush_width, brush_height))
+	paint_material.set_shader_param("paint_rate", rate)
+	paint_material.set_shader_param("target_channel", channel)
+	paint_material.set_shader_param("map_size", Vector2(width * BLOB_SIZE, height * BLOB_SIZE))
+	
+	outputlog("  UV range in mesh: " + str(brush_min_blob / map_size_blob) + " to " + str(brush_max_blob / map_size_blob), 2)
+	
+	var t1 = OS.get_ticks_msec()
+	
+	# Render ALL splats in one go, then read back
+	var rendered_regions = []
+	
+	for splat_idx in range(num_splats):
+		paint_material.set_shader_param("output_splat", splat_idx)
+		paint_viewport.render_target_update_mode = Viewport.UPDATE_ONCE
+		
+		yield(get_tree(), "idle_frame")
+		
+		# Read back the region immediately
+		var region_img = paint_viewport.get_texture().get_data()
+		region_img.flip_y()
+		
+		# DEBUG: Check what we got
+		region_img.lock()
+		var sample_pixel = region_img.get_pixel(0, 0)
+		region_img.unlock()
+		outputlog("  splat %d sample pixel: %s" % [splat_idx, sample_pixel], 2)
+
+		outputlog("splat_idx: " + str(splat_idx))
+		outputlog(poolbytearray_to_string(region_img.get_data()))
+		
+		# Convert to RGBA8 to match splat format
+		if region_img.get_format() != Image.FORMAT_RGBA8:
+			region_img.convert(Image.FORMAT_RGBA8)
+		
+		rendered_regions.append(region_img)
+	
+	var t2 = OS.get_ticks_msec()
+	outputlog("  render time: %.1f ms" % (t2 - t1), 2)
+	
+	# Now blit all regions back
+	var t3 = OS.get_ticks_msec()
+	for splat_idx in range(num_splats):
+		var region_img = rendered_regions[splat_idx]
+		
+		splatImages[splat_idx].lock()
+		region_img.lock()
+		splatImages[splat_idx].blit_rect(
+			region_img,
+			Rect2(Vector2.ZERO, region_size_blob),
+			brush_min_blob
+		)
+		region_img.unlock()
+		splatImages[splat_idx].unlock()
+		
+		update_splat(splat_idx)
+	
+	var t4 = OS.get_ticks_msec()
+	outputlog("  blit time: %.1f ms" % (t4 - t3), 2)
+	
+	var prof_end = OS.get_ticks_msec()
+	outputlog("GPU paint: %.1f ms (region: %dx%d blobs)" % [prof_end - prof_start, region_size_blob.x, region_size_blob.y], 2)
+
+
+func update_paint_mesh_for_region(offset_blob: Vector2, size_blob: Vector2, map_size_blob: Vector2):
+	# Calculate UVs for the region in splat texture coordinates
+	var uv_min = offset_blob / map_size_blob
+	var uv_max = (offset_blob + size_blob) / map_size_blob
+	
+	var arrays = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	
+	# Vertex positions cover the viewport (in blob units)
+	arrays[Mesh.ARRAY_VERTEX] = PoolVector2Array([
+		Vector2(0, 0),
+		Vector2(size_blob.x, 0),
+		Vector2(size_blob.x, size_blob.y),
+		Vector2(0, size_blob.y)
+	])
+	
+	# UVs sample only the affected region from splat textures
+	arrays[Mesh.ARRAY_TEX_UV] = PoolVector2Array([
+		Vector2(uv_min.x, uv_min.y),
+		Vector2(uv_max.x, uv_min.y),
+		Vector2(uv_max.x, uv_max.y),
+		Vector2(uv_min.x, uv_max.y)
+	])
+	
+	arrays[Mesh.ARRAY_INDEX] = PoolIntArray([0, 1, 2, 0, 2, 3])
+	
+	var this_mesh = ArrayMesh.new()
+	this_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	paint_mesh.mesh = this_mesh
+
+func setup_gpu_painting():
+	# Create viewport for GPU painting
+	paint_viewport = Viewport.new()
+	paint_viewport.size = Vector2(width, height)
+	paint_viewport.render_target_v_flip = true
+	paint_viewport.render_target_update_mode = Viewport.UPDATE_DISABLED
+	paint_viewport.transparent_bg = true  # CHANGED TO TRUE
+	paint_viewport.render_target_clear_mode = Viewport.CLEAR_MODE_ONLY_NEXT_FRAME
+	paint_viewport.hdr = false
+	paint_viewport.usage = Viewport.USAGE_2D
+	add_child(paint_viewport)
+	
+	# Create mesh
+	paint_mesh = MeshInstance2D.new()
+	var mesh = ArrayMesh.new()
+	var arrays = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	
+	arrays[Mesh.ARRAY_VERTEX] = PoolVector2Array([
+		Vector2(0, 0),
+		Vector2(width, 0),
+		Vector2(width, height),
+		Vector2(0, height)
+	])
+	
+	arrays[Mesh.ARRAY_TEX_UV] = PoolVector2Array([
+		Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)
+	])
+	
+	arrays[Mesh.ARRAY_INDEX] = PoolIntArray([0, 1, 2, 0, 2, 3])
+	
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	paint_mesh.mesh = mesh
+	paint_viewport.add_child(paint_mesh)
+	
+	# Create shader material
+	var shader = Shader.new()
+	shader.code = get_paint_shader_code_debug()
+	paint_material = ShaderMaterial.new()
+	paint_material.shader = shader
+	paint_mesh.material = paint_material
 
 
 # Optimized blend - uses cached arrays and writes back each frame
