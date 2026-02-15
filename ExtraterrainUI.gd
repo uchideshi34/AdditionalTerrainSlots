@@ -177,7 +177,7 @@ func _init(parent: Control = null, global_ref = null, index: int = -1):
 	var slider_label = Label.new()
 	slider_label.text = "Brush Size"
 	parent.add_child(slider_label)
-	brush_size_slider = NewHSlider.new(parent, 8, 1, 12, 1, false, 0)
+	brush_size_slider = NewHSlider.new(parent, 8, 1, 25, 1, false, 0)
 
 	var intensity_label = Label.new()
 	intensity_label.text = "Intensity"

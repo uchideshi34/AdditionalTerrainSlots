@@ -19,9 +19,9 @@ func set_splats(data: Array):
 					extraterrain.unbake_terrain()
 
 				for _i in data.size():
-					main_script.outputlog("_i: " + str(_i),2)
+					main_script.outputlog("data record for splats _i: " + str(_i),2)
 					extraterrain.splatImages[_i].create_from_data(extraterrain.width, extraterrain.height, false, Image.FORMAT_RGBA8, data[_i])
-				extraterrain.update_splats()
+				extraterrain.update_splat_textures_from_images()
 
 				# If this is the current level and we want to bake the terrain, then do so
 				if history_record["level"] == Global.World.GetCurrentLevel() && main_script.extraterrainui.show_hide_button.pressed && main_script.enable_baking:

@@ -3,18 +3,11 @@ extends MeshInstance2D
 var level = null
 var splatImages = []
 var splatTextures = []
-var splat_is_modified = []
-var store_splat_hashes = []
+
 
 var textures = []
 var width = 0
 var height = 0
-
-var brush_image = null
-var brush_data: PoolByteArray = []
-var brush_width = 0
-var brush_height = 0
-var brush_tex = null
 
 var first = true
 
@@ -26,6 +19,7 @@ var terrain_atlas_tile_sizes = [] # tile size for the atlas allowing it to vary 
 
 var terrain_atlas_grid = Vector2.ZERO
 var terrain_scales = []
+var active_blocks = 0
 
 var smoothblending = false
 var num_splats = 0
@@ -38,6 +32,7 @@ const BLOB_OFFSET = 32.0
 const MAX_TEXTURE_PIXEL_SIZE = 2048 * 1.5 # Strictly speaking this isn't a hard max but 4096 is for 4 columns
 const ALTAS_COLUMNS_NUMBER = 4
 const NODE_NAME = "ExtraTerrain987234"
+const MAX_SPLATS = 6
 
 signal record_history
 
@@ -98,7 +93,7 @@ func make_dummy_texture() -> ImageTexture:
 	var img = Image.new()
 	img.create(1, 1, false, Image.FORMAT_RGBA8)
 	img.lock()
-	img.set_pixel(0, 0, Color(1,0,0,1))
+	img.set_pixel(0, 0, Color(0,0,0,1))
 	img.unlock()
 
 	var tex = ImageTexture.new()
@@ -179,8 +174,6 @@ func _init(parent_level, woxelDimensions: Vector2):
 
 	width = int(woxelDimensions.x / BLOB_SIZE)
 	height = int(woxelDimensions.y / BLOB_SIZE)
-	if woxelDimensions.x > 16384 - 256 ||  woxelDimensions.y > 16384 - 256:
-		can_bake_while_painting = false
 
 	update_mesh(woxelDimensions)
 	level = parent_level
@@ -191,11 +184,10 @@ func _init(parent_level, woxelDimensions: Vector2):
 	# Initialise splatimage
 	textures = []
 	add_splat()
-	splatImages[0].fill(Color(1.0, 0.0, 0.0, 0.0))
-	update_splats()
 	var new_material = ShaderMaterial.new()
 	self.material = new_material
 	self.material.set_shader_param("map_size",woxelDimensions)
+	update_splat_textures_from_images()
 
 # Function to update the mesh to the World size
 func update_mesh(woxelDimensions: Vector2):
@@ -245,15 +237,16 @@ func add_splat():
 
 	outputlog("add_splat",2)
 
-	splatImages.append(SplatImage.new(num_splats))
+	splatImages.append(Image.new())
 	splatImages[num_splats].create(width, height, false, Image.FORMAT_RGBA8)
-	splatImages[num_splats].fill(Color(0.0, 0.0, 0.0, 0.0))
+	if num_splats == 0:
+		splatImages[num_splats].fill(Color(1.0, 0.0, 0.0, 1.0))
+	else:
+		splatImages[num_splats].fill(Color(0.0, 0.0, 0.0, 1.0))
 	splatTextures.append(ImageTexture.new())
 	splatTextures[num_splats].create_from_image(splatImages[num_splats], 4)
-	textures.append_array([null,null,null,null])
+	textures.append_array([null,null,null])
 	num_splats += 1
-	splat_is_modified.append(true)
-	update_splats()
 	
 func remove_splat():
 
@@ -261,17 +254,24 @@ func remove_splat():
 
 	splatImages.remove(splatImages.size()-1)
 	splatTextures.remove(splatTextures.size()-1)
-	splat_is_modified.append(splat_is_modified.size()-1)
 
 	for _i in 4:
 		textures.remove(textures.size()-1)
 	
 	num_splats -= 1
-	update_splats()
+
+func set_active_blocks_number(target_number: int):
+
+	set_splat_number(ceil(target_number * 4 / 3.0))
+
+	active_blocks = target_number
+	self.material.set_shader_param("active_blocks", active_blocks)
 
 func set_splat_number(target_number: int):
 
-	outputlog("set_splat_number: " + str(target_number),2)
+	outputlog("set_splat_number: " + str(target_number) + " current number: " + str(num_splats),2)
+	# The textures are the source of truth while active so copy them to images first where value
+	update_splat_images_from_textures()
 
 	if num_splats < target_number:
 		for _i in target_number-num_splats:
@@ -279,48 +279,51 @@ func set_splat_number(target_number: int):
 	if num_splats > target_number:
 		for _i in num_splats-target_number:
 			remove_splat()
+	
+	update_splat_textures_from_images()
 
 # Updates the splat texture from the spla
-func update_splats():
+func update_splat_textures_from_images():
 
-	outputlog("update_splats",3)
+	outputlog("update_splat_textures_from_images",3)
 
 	for _i in num_splats:
-		update_splat(_i)
-	for _i in range(num_splats,4,1):
+		update_splat_texture_from_image(_i)
+	for _i in range(num_splats,MAX_SPLATS,1):
 		material.set_shader_param("splat"+ str(_i), make_dummy_texture())
 
-	material.set_shader_param("active_blocks", num_splats)
-
 # Function to update only a single splat
-func update_splat(index: int):
+func update_splat_texture_from_image(index: int):
 
-	outputlog("update_splat: " + str(index),3)
-	var time_record = time_function_start("update_splat")
+	outputlog("update_splat_texture_from_image: " + str(index),3)
+	var time_record = time_function_start("update_splat_texture_from_image")
 
 	if index < num_splats:
+		
 		splatTextures[index].create_from_image(splatImages[index], 4)
-		material.set_shader_param("splat"+ str(index),splatTextures[index])
+		self.material.set_shader_param("splat"+ str(index),splatTextures[index])
 	
 	time_function_end(time_record, 3)
 
-func mark_splat_modified(splat_idx: int, modified: bool = true):
+func update_splat_images_from_textures():
 
-	if splat_idx < num_splats:
-		splat_is_modified[splat_idx] = modified
+	outputlog("update_splat_images_from_textures",3)
 
-func mark_all_splats_modified(modified: bool = true):
+	for _i in num_splats:
+		update_splat_image_from_texture(_i)
 
-	for _i in splat_is_modified.size():
-		mark_splat_modified(_i, modified)
+# Function to update only a single splat
+func update_splat_image_from_texture(index: int):
 
-func are_splats_modified() -> bool:
+	outputlog("update_splat_image_from_texture: " + str(index),3)
+	var time_record = time_function_start("update_splat_image_from_texture")
 
-	for splat_idx in splat_is_modified.size():
-		if splat_is_modified[splat_idx]:
-			return true
+	if index < num_splats && index < splatTextures.size():
+		if splatTextures[index] != null:
+			splatImages[index] = splatTextures[index].get_data()
+	
+	time_function_end(time_record, 3)
 
-	return false
 
 #########################################################################################################
 ##
@@ -356,29 +359,41 @@ func fill_channel(channel: int):
 
 	outputlog("fill_channel: " + str(channel),2)
 
-	for splatimg in splatImages:
-		splatimg.fill_channel(channel)
-	mark_all_splats_modified()
-	update_splats()
+	for _i in splatImages.size():
+		fill_channel_on_splat(splatImages[_i], _i, channel)
+
+	update_splat_textures_from_images()
+
+func fill_channel_on_splat(original: Image, splat_idx: int, channel: int):
+
+	outputlog("fill_channel_on_splat: " + str(channel),2)
+
+	if int(channel/3.0) == splat_idx:
+		outputlog("channel is in this splat",2)
+		match channel % 3:
+			0:
+				original.fill(Color(1.0, 0.0, 0.0, 0.0))
+			1:
+				original.fill(Color(0.0, 1.0, 0.0, 0.0))
+			2:
+				original.fill(Color(0.0, 0.0, 1.0, 0.0))
+	else:
+		original.fill(Color(0.0, 0.0, 0.0, 0.0))
 
 # Function to paint terrain
-func paint_terrain(mouse_position: Vector2, terrain_index: int, rate: float, brush_size: float):
+func paint_terrain(splatpainter, mouse_position: Vector2, terrain_index: int, rate: float, brush_size: float):
 
-	outputlog("paint_terrain: index " + str(terrain_index) + "target_splat: " + str(int(terrain_index/4.0)) + " rate: " + str(rate),3)
-	if not is_equal_approx(brush_size, brush_width * 2.0):
-		update_brush_data(brush_size)
+	outputlog("paint_terrain: index " + str(terrain_index) + " target_splat: " + str(int(terrain_index/3.0)) + " rate: " + str(rate),3)
 
 	if not painting_active:
 		start_painting()
-	# Core paint function call noting this only calls the splatImage that controls the positive channel
-	#blend_towards_channel(mouse_position, terrain_index, rate)
-	blend_towards_channel_gpu_debug(mouse_position, terrain_index, rate)
 
-	#mark_all_splats_modified()
+	splatpainter.update_active_extraterrain(self)
+	splatpainter.update_brush_data(brush_size)
+	yield(splatpainter.blend_towards_channel(mouse_position, terrain_index, rate),"completed")
 
-	for splat_idx in range(num_splats+1):
-		yield(get_tree(), "idle_frame")
-	update_splats()
+	update_splat_textures_from_images()
+
 
 func set_smoothblending(button_pressed: bool):
 
@@ -389,8 +404,6 @@ func set_smoothblending(button_pressed: bool):
 
 # Add these class variables
 var painting_active: bool = false
-var cached_byte_arrays = []
-var clear_cache_after_painting = false
 var history_record = {"level": null, "splat_size": Vector2.ZERO, "before_splats_data": [], "after_splats_data": []}
 
 # Call this when user starts painting (mouse down)
@@ -399,71 +412,48 @@ func start_painting():
 	if painting_active:
 		return
 	
-	outputlog("start_painting - loading byte data", 2)
-	var t1 = OS.get_ticks_msec()
-	
+	outputlog("start_painting", 2)
 	painting_active = true
-	refresh_all_splats_byte_data()
+	record_history_start_state()
+
+# Record a the 
+func record_history_start_state():
+
+	outputlog("record_history_start_state", 2)
+
+	var time_record = time_function_start("record_history_start_state")
+
+	history_record = {"level": null, "splat_size": Vector2.ZERO, "before_splats_data": [], "after_splats_data": []}
 	history_record["splat_size"] = Vector2(width, height)
 	history_record["level"] = level
+	for _i in num_splats:
+		history_record["before_splats_data"].append(splatTextures[_i].get_data().get_data())
 	
-	# Convert to regular arrays once
-	if clear_cache_after_painting || cached_byte_arrays.size() == 0:
-		cached_byte_arrays.clear()
-		for s in splatImages.size():
-			var arr = []
-			arr.resize(splatImages[s].byte_data.size())
-			for i in range(splatImages[s].byte_data.size()):
-				arr[i] = splatImages[s].byte_data[i]
-			cached_byte_arrays.append(arr)
-	
-	for s in splatImages.size():
-		history_record["before_splats_data"].append(splatImages[s].byte_data)
-	
-	# Clear the PoolByteArray references since we have the data
-	for splat in splatImages:
-		splat.byte_data.empty()
-	
-	var t2 = OS.get_ticks_msec()
-	outputlog("  loaded in %.1f ms" % (t2 - t1), 2)
+	time_function_end(time_record)
 
 # Call this when user stops painting (mouse up)
 func end_painting():
+
 	if not painting_active:
 		return
 	
-	outputlog("end_painting - clearing cache", 2)
+	outputlog("end_painting", 2)
 
-	if history_record["before_splats_data"].size() > 0:
-		for _i in splatImages.size():
-			history_record["after_splats_data"].append(splatImages[_i].get_data())
-	
-	self.emit_signal("record_history", self, history_record.duplicate(true))
-
-	if clear_cache_after_painting:
-		cached_byte_arrays.clear()
+	record_history_end_state()
 
 	painting_active = false
 
-#########################################################################################################
-##
-## BRUSH FUNCTIONS
-##
-#########################################################################################################
+# Record a history event and fire the notification signal to the main script
+func record_history_end_state():
 
-# Function to update the brush data to reflect the brush and its size
-func update_brush_data(scale: float):
+	outputlog("record_history_end_state", 2)
 
-	var base_size = brush_image.get_size()
-	var scaled_brush = Image.new()
+	if history_record["before_splats_data"].size() > 0:
+		for _i in num_splats:
+			history_record["after_splats_data"].append(splatTextures[_i].get_data().get_data())
+	
+	self.emit_signal("record_history", self, history_record.duplicate(true))
 
-	scaled_brush.copy_from(brush_image)
-	scaled_brush.resize(base_size.x * scale * 2.0, base_size.y * scale * 2.0, Image.INTERPOLATE_LANCZOS)
-	brush_data = scaled_brush.get_data()
-	brush_width = scaled_brush.get_width()
-	brush_height = scaled_brush.get_height()
-	brush_tex = ImageTexture.new()
-	brush_tex.create_from_image(scaled_brush,4)
 
 #########################################################################################################
 ##
@@ -477,13 +467,30 @@ func resize( up_delta_sq: int, down_delta_sq: int, right_delta_sq: int, left_del
 
 	# Update splats
 	for _i in num_splats:
-		splatImages[_i].resize_splat(Vector2(width, height),  up_delta_sq * 4, down_delta_sq * 4, right_delta_sq * 4, left_delta_sq * 4)
+		resize_splat(splatImages[_i], _i, Vector2(width, height),  up_delta_sq * 4, down_delta_sq * 4, right_delta_sq * 4, left_delta_sq * 4)
 
 	width += right_delta_sq * 4 + left_delta_sq * 4
 	height += up_delta_sq * 4 + down_delta_sq * 4
 
 	update_mesh(Vector2(width, height)*BLOB_SIZE)
-	update_splats()
+	update_splat_textures_from_images()
+
+func resize_splat(original: Image, splat_idx: int, original_size: Vector2, up_delta: int, down_delta: int, right_delta: int, left_delta: int):
+
+	outputlog("resize_splat",2)
+
+	var new_size = Vector2(original_size.x + right_delta + left_delta, original_size.y + up_delta + down_delta)
+
+	var img = Image.new()
+	img.create(new_size.x, new_size.y, false, Image.FORMAT_RGBA8 )
+	if splat_idx == 0:
+		img.fill(Color(1.0, 0.0, 0.0, 0.0))
+	else:
+		img.fill(Color(0.0, 0.0, 0.0, 0.0))
+	
+	img.blit_rect(self, Rect2(0.0, 0.0, original_size.x, original_size.y), Vector2(left_delta, up_delta))
+
+	original.create_from_data(new_size.x, new_size.y, false, Image.FORMAT_RGBA8, img.get_data())
 
 #########################################################################################################
 ##
@@ -497,12 +504,14 @@ var is_terrain_baked: bool = false
 var is_baking: bool = false
 
 func bake_terrain_to_texture():
+
 	if is_terrain_baked || is_baking:
 		return
 	
 	is_baking = true
 	
-	outputlog("Baking terrain to static texture", 1)
+	outputlog("Baking terrain to static texture", 2)
+	
 	var time_record = time_function_start("bake_terrain_to_texture")
 	
 	var full_size = Vector2(width * BLOB_SIZE, height * BLOB_SIZE)
@@ -510,22 +519,61 @@ func bake_terrain_to_texture():
 	var tiles_x = int(ceil(full_size.x / tile_size))
 	var tiles_y = int(ceil(full_size.y / tile_size))
 	
-	outputlog("Rendering " + str(tiles_x) + "x" + str(tiles_y) + " tiles", 1)
+	outputlog("Rendering " + str(tiles_x) + "x" + str(tiles_y) + " tiles", 2)
+
 	
 	# Create viewport for tiled rendering
 	terrain_viewport = Viewport.new()
 	terrain_viewport.size = Vector2(tile_size, tile_size)
 	terrain_viewport.hdr = false
 	terrain_viewport.usage = Viewport.USAGE_2D
-	terrain_viewport.render_target_update_mode = Viewport.UPDATE_ALWAYS
 	terrain_viewport.render_target_v_flip = true
+	terrain_viewport.render_target_update_mode = Viewport.UPDATE_ALWAYS
+
+	# If this is the first time using the terrain_viewport
+	if terrain_viewport.get_parent() == null:
+		add_child(terrain_viewport)
+	else:
+		# This should be unnecessary as the viewport should only be a child of the eztraterrain
+		if terrain_viewport.get_parent() != self:
+			terrain_viewport.get_parent().remove_child(terrain_viewport)
+			self.add_child(terrain_viewport)
+
 	
-	add_child(terrain_viewport)
-	
-	# Clone mesh
+	# Clone mesh WITH material
 	var mesh_copy = MeshInstance2D.new()
 	mesh_copy.mesh = self.mesh
-	mesh_copy.material = self.material
+	
+	# IMPORTANT: Duplicate the material so we don't affect the original
+	var bake_material = self.material.duplicate()
+	mesh_copy.material = bake_material
+	
+	# Make sure all shader params are current
+	bake_material.set_shader_param("map_size", Vector2(width * BLOB_SIZE, height * BLOB_SIZE))
+	bake_material.set_shader_param("active_blocks", active_blocks)
+	
+	# Set all splat textures
+	for i in range(num_splats):
+		bake_material.set_shader_param("splat" + str(i), splatTextures[i])
+	for i in range(num_splats, MAX_SPLATS):
+		bake_material.set_shader_param("splat" + str(i), make_dummy_texture())
+	
+	# Set all terrain atlases
+	for i in range(active_blocks):
+		if i < terrain_atlases.size() and terrain_atlases[i]:
+			bake_material.set_shader_param("terrain_atlas" + str(i), terrain_atlases[i])
+		else:
+			bake_material.set_shader_param("terrain_atlas" + str(i), make_dummy_texture())
+	for i in range(active_blocks, 4):
+		bake_material.set_shader_param("terrain_atlas" + str(i), make_dummy_texture())
+	
+	# Set other params
+	bake_material.set_shader_param("atlas_grid", terrain_atlas_grid)
+	bake_material.set_shader_param("tile_scale_tex", material.get_shader_param("tile_scale_tex"))
+	bake_material.set_shader_param("tile_scale_count", material.get_shader_param("tile_scale_count"))
+	bake_material.set_shader_param("blend_step", material.get_shader_param("blend_step"))
+	
+	mesh_copy.visible = true
 	terrain_viewport.add_child(mesh_copy)
 	
 	# Array to store tile sprites for cleanup
@@ -533,6 +581,8 @@ func bake_terrain_to_texture():
 
 	# If this is too big to render as a single image then tile is
 	if full_size.x > (16384 - 256) || full_size.x > (16384 - 256):
+
+		global.Editor.Warn("Baking Terrain", "Baking terrain this may take a few seconds.")
 	
 		# Render each tile
 		for ty in range(tiles_y):
@@ -547,13 +597,15 @@ func bake_terrain_to_texture():
 				
 				# Position mesh to render this tile
 				mesh_copy.position = Vector2(-offset_x, -offset_y)
+
+				terrain_viewport.update()
 				
 				yield(get_tree(), "idle_frame")
-				yield(get_tree(), "idle_frame")
+				#yield(get_tree(), "idle_frame")
 				
 				# Get tile image
 				var tile_img = terrain_viewport.get_texture().get_data()
-				
+
 				# Only crop if this is an edge tile
 				if is_edge_tile:
 					var cropped = Image.new()
@@ -577,35 +629,56 @@ func bake_terrain_to_texture():
 				tile_sprite.z_index = self.z_index
 				tile_sprite.name = "BakedTerrainTile_" + str(tx) + "_" + str(ty)
 				
-				get_parent().add_child(tile_sprite)
+				level.add_child(tile_sprite)
 				tile_sprites.append(tile_sprite)
 				
 				outputlog("Rendered tile " + str(tx) + "," + str(ty) + " size: " + str(actual_width) + "x" + str(actual_height), 2)
 	
 	# Otherwise just create a single image which is much faster
 	else:
+		terrain_viewport.update()
 
-		var texture = terrain_viewport.get_texture()
+		yield(get_tree(), "idle_frame")
+		yield(get_tree(), "idle_frame")
+
+		var tile_img = terrain_viewport.get_texture().get_data()
+
+		# CREATE A NEW TEXTURE FROM THE IMAGE
+		var baked_texture = ImageTexture.new()
+		baked_texture.create_from_image(tile_img, 0)
 	
 		# Create a simple sprite to display it
 		var terrain_sprite = Sprite.new()
-		terrain_sprite.texture = texture
+		terrain_sprite.texture = baked_texture
 		terrain_sprite.centered = false
 		terrain_sprite.position = self.position
 		terrain_sprite.z_index = self.z_index
 		terrain_sprite.name = "BakedTerrain"
+		# After creating tile_sprite
+		terrain_sprite.modulate = Color(1, 1, 1, 1)  # Full opacity
+		terrain_sprite.visible = true
 
+		level.add_child(terrain_sprite)
 		tile_sprites.append(terrain_sprite)
-	
-		# Add sprite to parent
-		get_parent().add_child(terrain_sprite)
 
 	# Store tile sprites for cleanup
 	terrain_sprites = tile_sprites.duplicate(true)
-	
+
+	# Remove the meshcopy and hide the viewport
+	terrain_viewport.remove_child(mesh_copy)
+	mesh_copy.queue_free()
+	mesh_copy = null
+
+	#terrain_viewport.render_target_update_mode = Viewport.UPDATE_DISABLED
 	self.visible = false
+
 	is_terrain_baked = true
 	is_baking = false
+
+	# If the warning is active then remove it
+	if global.Editor.Windows["Accept"].visible:
+		global.Editor.Windows["Accept"].visible = false
+
 	time_function_end(time_record)
 
 func unbake_terrain():
@@ -661,25 +734,25 @@ func build_all_atlases():
 
 	terrain_atlases.resize(4)
 	
-	for splat_idx in range(num_splats):
-		build_single_atlas(splat_idx)
+	for block_idx in range(active_blocks):
+		build_single_atlas(block_idx)
 	
 	# Set dummy textures for unused splats
-	for splat_idx in range(num_splats, 4):
-		terrain_atlases[splat_idx] = make_dummy_texture()
-		material.set_shader_param("terrain_atlas" + str(splat_idx), terrain_atlases[splat_idx])
+	for block_idx in range(active_blocks, 4):
+		terrain_atlases[block_idx] = make_dummy_texture()
+		material.set_shader_param("terrain_atlas" + str(block_idx), terrain_atlases[block_idx])
 	
 	# Update the terrain scales
 	update_terrain_scales()
 
 # Find the tile_size of an atlas
-func get_atlas_tile_size(splat_idx: int) -> Vector2:
+func get_atlas_tile_size(block_idx: int) -> Vector2:
 
-	outputlog("get_atlas_tile_size: " + str(splat_idx), 2)
+	outputlog("get_atlas_tile_size: " + str(block_idx), 2)
 
 	var max_size = Vector2.ZERO
 	for local_idx in range(4):
-		var tex_idx = splat_idx * 4 + local_idx
+		var tex_idx = block_idx * 4 + local_idx
 		if tex_idx >= textures.size() or textures[tex_idx] == null:
 			continue
 		var tex = textures[tex_idx]
@@ -691,12 +764,12 @@ func get_atlas_tile_size(splat_idx: int) -> Vector2:
 	return max_size
 
 # Build a single atlas
-func build_single_atlas(splat_idx: int):
+func build_single_atlas(block_idx: int):
 
-	outputlog("build_single_atlas: " + str(splat_idx), 2)
+	outputlog("build_single_atlas: " + str(block_idx), 2)
 
-	var tile_size = get_atlas_tile_size(splat_idx)
-	terrain_atlas_tile_sizes[splat_idx] = tile_size
+	var tile_size = get_atlas_tile_size(block_idx)
+	terrain_atlas_tile_sizes[block_idx] = tile_size
 
 	var atlas_image = Image.new()
 	atlas_image.create(int(tile_size.x) * 2, int(tile_size.y) * 2, false, Image.FORMAT_RGBA8)
@@ -704,7 +777,7 @@ func build_single_atlas(splat_idx: int):
 	
 	# 2x2 grid for 4 textures
 	for local_idx in range(4):
-		var tex_idx = splat_idx * 4 + local_idx
+		var tex_idx = block_idx * 4 + local_idx
 		if tex_idx >= textures.size() or textures[tex_idx] == null:
 			continue
 		
@@ -723,8 +796,8 @@ func build_single_atlas(splat_idx: int):
 	
 	var atlas_texture = ImageTexture.new()
 	atlas_texture.create_from_image(atlas_image, Texture.FLAG_FILTER | Texture.FLAG_REPEAT)
-	terrain_atlases[splat_idx] = atlas_texture
-	material.set_shader_param("terrain_atlas" + str(splat_idx), atlas_texture)
+	terrain_atlases[block_idx] = atlas_texture
+	material.set_shader_param("terrain_atlas" + str(block_idx), atlas_texture)
 
 # Update a single atlas - use when only a single terrain changes
 func update_single_atlas(tex_idx: int):
@@ -773,7 +846,7 @@ func update_terrain_scales():
 	var max_size = Vector2.ZERO
 	terrain_scales = []
 	for _i in 4:
-		if _i < num_splats:
+		if _i < active_blocks:
 			for _j in 4:
 				if (_i * 4 + _j) < textures.size():
 					var tex = textures[_i * 4 + _j]
@@ -820,681 +893,6 @@ func get_texture_scale(texture: Texture):
 	if texture == null: return Vector2.ONE
 	return Vector2(texture.get_width(), texture.get_height())
 
-#########################################################################################################
-##
-## BLEND TOWARDS CHANNEL FUNCTIONS
-##
-#########################################################################################################
-
-var paint_viewport = null
-var paint_material = null
-var paintshader = null
-var paint_mesh = null
-
-func get_paint_shader_code() -> String:
-	return """
-shader_type canvas_item;
-
-// Input splat textures
-uniform sampler2D splat0;
-uniform sampler2D splat1;
-uniform sampler2D splat2;
-uniform sampler2D splat3;
-
-// Brush texture (alpha channel is weight)
-uniform sampler2D brush_texture;
-
-// Brush parameters
-uniform vec2 brush_position;  // In pixel coordinates
-uniform vec2 brush_size;      // In pixels
-uniform float paint_rate;     // 0.0 to 1.0
-uniform int target_channel;   // 0-15 (which channel to paint)
-uniform int output_splat;     // Which splat to output (0-3)
-uniform vec2 map_size;        // Width, height in pixels
-
-void fragment() {
-	vec2 pixel_pos = UV * map_size;
-	
-	// Calculate brush UV
-	vec2 brush_uv = (pixel_pos - brush_position + brush_size * 0.5) / brush_size;
-	
-	// Get brush weight (default to 0 if outside brush)
-	float weight = 0.0;
-	if (brush_uv.x >= 0.0 && brush_uv.x <= 1.0 && brush_uv.y >= 0.0 && brush_uv.y <= 1.0) {
-		weight = texture(brush_texture, brush_uv).a;
-	}
-	
-	// Read all current channels
-	vec4 s0 = texture(splat0, UV);
-	vec4 s1 = texture(splat1, UV);
-	vec4 s2 = texture(splat2, UV);
-	vec4 s3 = texture(splat3, UV);
-	
-	// If no brush weight, just pass through unchanged
-	if (weight <= 0.0) {
-		if (output_splat == 0) COLOR = s0;
-		else if (output_splat == 1) COLOR = s1;
-		else if (output_splat == 2) COLOR = s2;
-		else COLOR = s3;
-		COLOR = vec4(0.0);
-		return;
-	}
-	
-	// Calculate change amount
-	float change = paint_rate * weight;
-	
-	// Pack into array
-	float channels[16];
-	channels[0] = s0.r; channels[1] = s0.g; channels[2] = s0.b; channels[3] = s0.a;
-	channels[4] = s1.r; channels[5] = s1.g; channels[6] = s1.b; channels[7] = s1.a;
-	channels[8] = s2.r; channels[9] = s2.g; channels[10] = s2.b; channels[11] = s2.a;
-	channels[12] = s3.r; channels[13] = s3.g; channels[14] = s3.b; channels[15] = s3.a;
-	
-	// Calculate total
-	float total = 0.0;
-	for (int i = 0; i < 16; i++) {
-		total += channels[i];
-	}
-	
-	// Increase target channel
-	float old_value = channels[target_channel];
-	float new_value = clamp(old_value + change, 0.0, 1.0);
-	
-	// Handle deficit
-	if (total < 1.0) {
-		float deficit = 1.0 - total;
-		new_value = clamp(old_value + max(change, deficit), 0.0, 1.0);
-	}
-	
-	float actual_change = new_value - old_value;
-	channels[target_channel] = new_value;
-	
-	// Reduce other channels proportionally
-	if (actual_change > 0.0) {
-		float other_total = total - old_value;
-		if (other_total > 0.0) {
-			for (int i = 0; i < 16; i++) {
-				if (i != target_channel && channels[i] > 0.0) {
-					float proportion = channels[i] / other_total;
-					float reduce = min(actual_change * proportion, channels[i]);
-					channels[i] -= reduce;
-				}
-			}
-		}
-	}
-	
-	// Output the requested splat
-	if (output_splat == 0) {
-		COLOR = vec4(channels[0], channels[1], channels[2], channels[3]);
-	} else if (output_splat == 1) {
-		COLOR = vec4(channels[4], channels[5], channels[6], channels[7]);
-	} else if (output_splat == 2) {
-		COLOR = vec4(channels[8], channels[9], channels[10], channels[11]);
-	} else {
-		COLOR = vec4(channels[12], channels[13], channels[14], channels[15]);
-	}
-	// Output the requested splat
-	if (output_splat == 0) {
-		COLOR = vec4(1.0 - weight, 0.0, 0.0, weight);
-	} else if (output_splat == 1) {
-		COLOR = vec4(0.0);
-	} else if (output_splat == 2) {
-		COLOR = vec4(0.0);
-	} else {
-		COLOR = vec4(0.0);
-	}
-}
-"""
-func get_paint_shader_code_debug() -> String:
-	return """
-shader_type canvas_item;
-
-uniform sampler2D splat0;
-uniform sampler2D splat1;
-uniform sampler2D splat2;
-uniform sampler2D splat3;
-uniform sampler2D brush_texture;
-
-uniform vec2 brush_position;
-uniform vec2 brush_size;
-uniform float paint_rate;
-uniform int target_channel;
-uniform int output_splat;
-uniform vec2 map_size;
-
-void fragment() {
-	// UV is in 0-1 range for the REGION
-	// We need to map it to the correct position in the full splat texture
-	
-	// This is handled by ARRAY_TEX_UV in the mesh - UV should already be correct
-	
-	// Sample the splat at current UV
-	vec4 s0 = texture(splat0, UV);
-	vec4 s1 = texture(splat1, UV);
-	vec4 s2 = texture(splat2, UV);
-	vec4 s3 = texture(splat3, UV);
-	
-	// DEBUG: Just pass through the input for now
-	if (output_splat == 0) {
-		COLOR = s0;
-		return;
-	} else if (output_splat == 1) {
-		COLOR = s1;
-		return;
-	} else if (output_splat == 2) {
-		COLOR = s2;
-		return;
-	} else {
-		COLOR = s3;
-		return;
-	}
-}
-"""
-
-
-func blend_towards_channel_gpu_debug(mouse_position: Vector2, channel: int, rate: float):
-
-	var prof_start = OS.get_ticks_msec()
-	
-	# DEBUG: Check what's in splatImages
-	for i in range(num_splats):
-		if splatImages[i]:
-			splatImages[i].lock()
-			var sample = splatImages[i].get_pixel(int(width/2), int(height/2))
-			splatImages[i].unlock()
-			outputlog("  splatImage[%d] center pixel: %s" % [i, sample], 2)
-	
-	# Calculate brush bounds in world pixel coordinates
-	var brush_min_world = mouse_position - Vector2(brush_width, brush_height) * 0.5
-	var brush_max_world = mouse_position + Vector2(brush_width, brush_height) * 0.5
-	
-	# Convert to blob coordinates (splat image coordinates)
-	var brush_min_blob = (brush_min_world / BLOB_SIZE).floor()
-	var brush_max_blob = (brush_max_world / BLOB_SIZE).ceil()
-	
-	# Clamp to splat image bounds
-	brush_min_blob.x = clamp(brush_min_blob.x, 0, width)
-	brush_min_blob.y = clamp(brush_min_blob.y, 0, height)
-	brush_max_blob.x = clamp(brush_max_blob.x, 0, width)
-	brush_max_blob.y = clamp(brush_max_blob.y, 0, height)
-	
-	var region_size_blob = brush_max_blob - brush_min_blob
-	
-	# Skip if region is too small
-	if region_size_blob.x < 1 or region_size_blob.y < 1:
-		return
-	
-	# Create/resize viewport to match brush region in blob coordinates
-	if not paint_viewport:
-		setup_gpu_painting()
-	
-	paint_viewport.size = region_size_blob
-	
-	# Update mesh to match region
-	var map_size_blob = Vector2(width, height)
-	update_paint_mesh_for_region(brush_min_blob, region_size_blob, map_size_blob)
-
-
-	# Create brush texture if needed
-	if not paint_material.get_shader_param("brush_texture"):
-		var brush_tex = create_brush_texture()
-		paint_material.set_shader_param("brush_texture", brush_tex)
-	
-	# Check for shader errors
-	if paint_material.shader.has_method("get_code"):
-		print("Shader code length: ", paint_material.shader.code.length())
-	
-	paint_material.shader.code = get_paint_shader_code_debug()
-
-	if paint_material.shader.has_method("get_code"):
-		print("Shader code length: ", paint_material.shader.code.length())
-	
-	# Create dummy texture for empty slots
-	var dummy = make_dummy_texture()
-	
-	# Create textures from current splatImages (the actual data)
-	var splat_tex_0 = ImageTexture.new()
-	var splat_tex_1 = ImageTexture.new()
-	var splat_tex_2 = ImageTexture.new()
-	var splat_tex_3 = ImageTexture.new()
-	
-	if num_splats > 0 and splatImages[0] != null:
-		splat_tex_0.create_from_image(splatImages[0], Texture.FLAG_FILTER)
-		# DEBUG: Verify texture was created
-		outputlog("  splat_tex_0 size: %s" % [splat_tex_0.get_size()], 2)
-	else:
-		splat_tex_0 = dummy
-	
-	if num_splats > 1 and splatImages[1] != null:
-		splat_tex_1.create_from_image(splatImages[1], Texture.FLAG_FILTER)
-	else:
-		splat_tex_1 = dummy
-	
-	if num_splats > 2 and splatImages[2] != null:
-		splat_tex_2.create_from_image(splatImages[2], Texture.FLAG_FILTER)
-	else:
-		splat_tex_2 = dummy
-	
-	if num_splats > 3 and splatImages[3] != null:
-		splat_tex_3.create_from_image(splatImages[3], Texture.FLAG_FILTER)
-	else:
-		splat_tex_3 = dummy
-	
-	# Set shader parameters with actual splat data
-	paint_material.set_shader_param("splat0", splat_tex_0)
-	paint_material.set_shader_param("splat1", splat_tex_1)
-	paint_material.set_shader_param("splat2", splat_tex_2)
-	paint_material.set_shader_param("splat3", splat_tex_3)
-	
-	paint_material.set_shader_param("brush_position", mouse_position)
-	paint_material.set_shader_param("brush_size", Vector2(brush_width, brush_height))
-	paint_material.set_shader_param("paint_rate", rate)
-	paint_material.set_shader_param("target_channel", channel)
-	paint_material.set_shader_param("map_size", Vector2(width * BLOB_SIZE, height * BLOB_SIZE))
-	
-	outputlog("  UV range in mesh: " + str(brush_min_blob / map_size_blob) + " to " + str(brush_max_blob / map_size_blob), 2)
-	
-	var t1 = OS.get_ticks_msec()
-	
-	# Render ALL splats in one go, then read back
-	var rendered_regions = []
-	
-	for splat_idx in range(num_splats):
-		paint_material.set_shader_param("output_splat", splat_idx)
-		paint_viewport.render_target_update_mode = Viewport.UPDATE_ONCE
-		
-		yield(get_tree(), "idle_frame")
-		
-		# Read back the region immediately
-		var region_img = paint_viewport.get_texture().get_data()
-		region_img.flip_y()
-		
-		# DEBUG: Check what we got
-		region_img.lock()
-		var sample_pixel = region_img.get_pixel(0, 0)
-		region_img.unlock()
-		outputlog("  splat %d sample pixel: %s" % [splat_idx, sample_pixel], 2)
-
-		outputlog("splat_idx: " + str(splat_idx))
-		outputlog(poolbytearray_to_string(region_img.get_data()))
-		
-		# Convert to RGBA8 to match splat format
-		if region_img.get_format() != Image.FORMAT_RGBA8:
-			region_img.convert(Image.FORMAT_RGBA8)
-		
-		rendered_regions.append(region_img)
-	
-	var t2 = OS.get_ticks_msec()
-	outputlog("  render time: %.1f ms" % (t2 - t1), 2)
-	
-	# Now blit all regions back
-	var t3 = OS.get_ticks_msec()
-	for splat_idx in range(num_splats):
-		var region_img = rendered_regions[splat_idx]
-		
-		splatImages[splat_idx].lock()
-		region_img.lock()
-		splatImages[splat_idx].blit_rect(
-			region_img,
-			Rect2(Vector2.ZERO, region_size_blob),
-			brush_min_blob
-		)
-		region_img.unlock()
-		splatImages[splat_idx].unlock()
-		
-		update_splat(splat_idx)
-	
-	var t4 = OS.get_ticks_msec()
-	outputlog("  blit time: %.1f ms" % (t4 - t3), 2)
-	
-	var prof_end = OS.get_ticks_msec()
-	outputlog("GPU paint: %.1f ms (region: %dx%d blobs)" % [prof_end - prof_start, region_size_blob.x, region_size_blob.y], 2)
-
-
-func update_paint_mesh_for_region(offset_blob: Vector2, size_blob: Vector2, map_size_blob: Vector2):
-	# Calculate UVs for the region in splat texture coordinates
-	var uv_min = offset_blob / map_size_blob
-	var uv_max = (offset_blob + size_blob) / map_size_blob
-	
-	var arrays = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	
-	# Vertex positions cover the viewport (in blob units)
-	arrays[Mesh.ARRAY_VERTEX] = PoolVector2Array([
-		Vector2(0, 0),
-		Vector2(size_blob.x, 0),
-		Vector2(size_blob.x, size_blob.y),
-		Vector2(0, size_blob.y)
-	])
-	
-	# UVs sample only the affected region from splat textures
-	arrays[Mesh.ARRAY_TEX_UV] = PoolVector2Array([
-		Vector2(uv_min.x, uv_min.y),
-		Vector2(uv_max.x, uv_min.y),
-		Vector2(uv_max.x, uv_max.y),
-		Vector2(uv_min.x, uv_max.y)
-	])
-	
-	arrays[Mesh.ARRAY_INDEX] = PoolIntArray([0, 1, 2, 0, 2, 3])
-	
-	var this_mesh = ArrayMesh.new()
-	this_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	paint_mesh.mesh = this_mesh
-
-func setup_gpu_painting():
-	# Create viewport for GPU painting
-	paint_viewport = Viewport.new()
-	paint_viewport.size = Vector2(width, height)
-	paint_viewport.render_target_v_flip = true
-	paint_viewport.render_target_update_mode = Viewport.UPDATE_DISABLED
-	paint_viewport.transparent_bg = true  # CHANGED TO TRUE
-	paint_viewport.render_target_clear_mode = Viewport.CLEAR_MODE_ONLY_NEXT_FRAME
-	paint_viewport.hdr = false
-	paint_viewport.usage = Viewport.USAGE_2D
-	add_child(paint_viewport)
-	
-	# Create mesh
-	paint_mesh = MeshInstance2D.new()
-	var mesh = ArrayMesh.new()
-	var arrays = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	
-	arrays[Mesh.ARRAY_VERTEX] = PoolVector2Array([
-		Vector2(0, 0),
-		Vector2(width, 0),
-		Vector2(width, height),
-		Vector2(0, height)
-	])
-	
-	arrays[Mesh.ARRAY_TEX_UV] = PoolVector2Array([
-		Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)
-	])
-	
-	arrays[Mesh.ARRAY_INDEX] = PoolIntArray([0, 1, 2, 0, 2, 3])
-	
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	paint_mesh.mesh = mesh
-	paint_viewport.add_child(paint_mesh)
-	
-	# Create shader material
-	var shader = Shader.new()
-	shader.code = get_paint_shader_code_debug()
-	paint_material = ShaderMaterial.new()
-	paint_material.shader = shader
-	paint_mesh.material = paint_material
-
-
-# Optimized blend - uses cached arrays and writes back each frame
-func blend_towards_channel(mouse_position: Vector2, channel: int, rate: float):
-	
-	if not painting_active:
-		outputlog("ERROR: blend called without start_painting!", 0)
-		return
-	
-	var prof_start = OS.get_ticks_msec()
-	
-	var num_splats = splatImages.size()
-	var byte_arrays = cached_byte_arrays  # Use cached arrays!
-	var dirty_splats = {}
-	
-	var img_width = splatImages[0].get_width()
-	
-	# Get the bounds of the brush
-	var min_position = (Vector2(mouse_position.x - 0.5 * brush_width, mouse_position.y - 0.5 * brush_height) / BLOB_SIZE).floor()
-	var min_location = Vector2(max(min_position.x, 0), max(min_position.y, 0))
-	var max_location = Vector2(
-		min((min_position.x + brush_width / BLOB_SIZE), width),
-		min((min_position.y + brush_height / BLOB_SIZE), height)
-	)
-	
-	var start_x = int(min_location.x)
-	var end_x = int(max_location.x)
-	var start_y = int(min_location.y)
-	var end_y = int(max_location.y)
-	
-	var num_channels = num_splats * 4
-	var rate_255 = rate * 255.0
-	
-	var t3 = OS.get_ticks_msec()
-	
-	for _j in range(start_y, end_y):
-		var row_base = _j * img_width * 4
-		
-		for _i in range(start_x, end_x):
-			var pixel_idx = row_base + _i * 4
-			
-			# Get brush weight (inlined)
-			var pos_x = (_i - min_position.x) * BLOB_SIZE + BLOB_OFFSET
-			var pos_y = (_j - min_position.y) * BLOB_SIZE + BLOB_OFFSET
-			
-			if pos_y < 0 or pos_x < 0:
-				continue
-			
-			var brush_idx = (int(pos_x) + int(pos_y) * brush_width) * 4 + 3
-			if brush_idx >= brush_data.size():
-				continue
-			
-			var weight = brush_data[brush_idx] / 255.0
-			if weight <= 0:
-				continue
-			
-			var change = int(rate_255 * weight)
-			if change == 0:
-				continue
-			
-			# Read all channels
-			var arr0 = byte_arrays[0]
-			var ch0 = arr0[pixel_idx]
-			var ch1 = arr0[pixel_idx + 1]
-			var ch2 = arr0[pixel_idx + 2]
-			var ch3 = arr0[pixel_idx + 3]
-			var total = ch0 + ch1 + ch2 + ch3
-			
-			var channels = [ch0, ch1, ch2, ch3]
-			if num_splats > 1:
-				for s in range(1, num_splats):
-					var arr_s = byte_arrays[s]
-					var c0 = arr_s[pixel_idx]
-					var c1 = arr_s[pixel_idx + 1]
-					var c2 = arr_s[pixel_idx + 2]
-					var c3 = arr_s[pixel_idx + 3]
-					channels.append(c0)
-					channels.append(c1)
-					channels.append(c2)
-					channels.append(c3)
-					total += c0 + c1 + c2 + c3
-			
-			var old_value = channels[channel]
-			var new_value = clamp(old_value + change, 0, 255)
-			
-			if total < 255:
-				var deficit = 255 - total
-				new_value = clamp(old_value + max(change, deficit), 0, 255)
-			
-			var actual_change = new_value - old_value
-			if actual_change == 0:
-				continue
-			
-			channels[channel] = new_value
-			
-			# Proportional reduction
-			var to_reduce = actual_change
-			var other_total = total - old_value
-			
-			if other_total > 0:
-				for i in num_channels:
-					if i == channel or channels[i] == 0:
-						continue
-					var proportion = float(channels[i]) / float(other_total)
-					var reduce_amount = min(int(ceil(to_reduce * proportion)), channels[i])
-					channels[i] -= reduce_amount
-			
-			# Write back and track changes
-			var changed0 = (arr0[pixel_idx] != channels[0] or arr0[pixel_idx + 1] != channels[1] or 
-			                arr0[pixel_idx + 2] != channels[2] or arr0[pixel_idx + 3] != channels[3])
-			
-			arr0[pixel_idx] = channels[0]
-			arr0[pixel_idx + 1] = channels[1]
-			arr0[pixel_idx + 2] = channels[2]
-			arr0[pixel_idx + 3] = channels[3]
-			
-			if changed0:
-				dirty_splats[0] = true
-			
-			if num_splats > 1:
-				var idx = 4
-				for s in range(1, num_splats):
-					var arr_s = byte_arrays[s]
-					var changed_s = (arr_s[pixel_idx] != channels[idx] or arr_s[pixel_idx + 1] != channels[idx + 1] or 
-					                 arr_s[pixel_idx + 2] != channels[idx + 2] or arr_s[pixel_idx + 3] != channels[idx + 3])
-					
-					arr_s[pixel_idx] = channels[idx]
-					arr_s[pixel_idx + 1] = channels[idx + 1]
-					arr_s[pixel_idx + 2] = channels[idx + 2]
-					arr_s[pixel_idx + 3] = channels[idx + 3]
-					
-					if changed_s:
-						dirty_splats[s] = true
-					
-					idx += 4
-	
-	var t4 = OS.get_ticks_msec()
-	
-	# Write back to GPU (only dirty splats)
-	var t5 = OS.get_ticks_msec()
-	for s in dirty_splats.keys():
-		var pool = PoolByteArray()
-		pool.resize(byte_arrays[s].size())
-		for i in range(byte_arrays[s].size()):
-			pool.set(i, byte_arrays[s][i])
-		
-		splatImages[s].create_from_data(
-			splatImages[s].get_width(),
-			splatImages[s].get_height(),
-			false,
-			Image.FORMAT_RGBA8,
-			pool
-		)
-		mark_splat_modified(s)
-
-	var t6 = OS.get_ticks_msec()
-	
-	var prof_end = OS.get_ticks_msec()
-	outputlog("blend: total=%.1fms loop=%.1fms rebuild=%.1fms" % [prof_end - prof_start, t4 - t3, t6 - t5], 3)
-
-# Function to cycle through each splatimage and set its byte data from the image value
-func refresh_all_splats_byte_data():
-
-	outputlog("refresh_all_splats_byte_data",3)
-
-	for _i in splatImages.size():
-		splatImages[_i].load_byte_data()
-
-#########################################################################################################
-##
-## SPLATIMAGE CLASS
-##
-#########################################################################################################
-
-# Note it doesn't feel like we get any value from putting blend_towards_channel and associated data in the splatimage as it is all just references.
-# We now seem to be loading all the data and affecting all the data anyway
-
-class SplatImage extends Image:
-	const BLOB_SIZE = 64.0
-	# Logging Functions
-	const ENABLE_LOGGING = true
-	var logging_level = 2
-	var first
-	var byte_data: PoolByteArray
-	var splat_number = -1
-
-	func _init(num: int):
-		splat_number = num
-
-	#########################################################################################################
-	##
-	## UTILITY FUNCTIONS
-	##
-	#########################################################################################################
-
-	func outputlog(msg,level=0):
-		if ENABLE_LOGGING:
-			if level <= logging_level:
-				printraw("(%d) <SplatImage>: " % OS.get_ticks_msec())
-				print(msg)
-		else:
-			pass
-
-	func get_byte_data_entry(_i: int, _j: int, local_channel: int):
-
-		if byte_data.size() == 0: return 0
-		return byte_data[(_i + _j * self.get_width()) * 4 + local_channel]
-
-	func set_byte_data_entry(_i: int, _j: int, local_channel: int, value: int):
-
-		if byte_data.size() == 0: return
-		byte_data[(_i + _j * self.get_width()) * 4 + local_channel] = value
-
-	func load_byte_data():
-
-		byte_data = self.get_data()
-
-	func fill_channel(channel: int):
-
-		outputlog("fill_channel: " + str(channel),2)
-
-		if is_channel_local(channel):
-			outputlog("channel is in this splat",2)
-			match channel % 4:
-				0:
-					self.fill(Color(1.0, 0.0, 0.0, 0.0))
-				1:
-					self.fill(Color(0.0, 1.0, 0.0, 0.0))
-				2:
-					self.fill(Color(0.0, 0.0, 1.0, 0.0))
-				3:
-					self.fill(Color(0.0, 0.0, 0.0, 1.0))
-		else:
-			self.fill(Color(0.0, 0.0, 0.0, 0.0))
-
-	func is_channel_local(channel: int):
-
-		return int(channel/4.0) == splat_number
-
-		# Gets an array of splat values from this splat image
-	func make_array_of_splat_values(_i: int, _j: int):
-
-		return [get_byte_data_entry(_i, _j, 0),get_byte_data_entry(_i, _j, 1),get_byte_data_entry(_i, _j, 2),get_byte_data_entry(_i, _j, 3)]
-
-	func print_entry(_i, _j, extra_desc: String = ""):
-
-		outputlog(str(extra_desc) + " entry: " + str(get_byte_data_entry(_i,_j,0)) + " " + str(get_byte_data_entry(_i,_j,1))+ " " + str(get_byte_data_entry(_i,_j,2))+ " " + str(get_byte_data_entry(_i,_j,3)),3)
-
-	func get_splat_total(_i: int, _j: int):
-
-		var total = 0
-		for _k in 4:
-			total += get_byte_data_entry(_i, _j, _k)
-		return total
-	
-	func resize_splat(original_size: Vector2, up_delta: int, down_delta: int, right_delta: int, left_delta: int):
-
-		outputlog("resize_splat",2)
-
-		var new_size = Vector2(original_size.x + right_delta + left_delta, original_size.y + up_delta + down_delta)
-
-		var img = Image.new()
-		img.create(new_size.x, new_size.y, false, Image.FORMAT_RGBA8 )
-		if splat_number == 0:
-			img.fill(Color(1.0, 0.0, 0.0, 0.0))
-		else:
-			img.fill(Color(0.0, 0.0, 0.0, 0.0))
-		
-		img.blit_rect(self, Rect2(0.0, 0.0, original_size.x, original_size.y), Vector2(left_delta, up_delta))
-
-		self.create_from_data(new_size.x, new_size.y, false, Image.FORMAT_RGBA8, img.get_data())
-
-		
 
 #########################################################################################################
 ##
@@ -1514,6 +912,7 @@ func get_data_record() -> Dictionary:
 		"smooth_blending": smoothblending,
 		"textures": [],
 		"num_splats": num_splats,
+		"active_blocks": active_blocks,
 		"splats": {}
 	}
 
@@ -1523,8 +922,7 @@ func get_data_record() -> Dictionary:
 	# If we need to update the splat records then create them from the splat images
 	for _i in num_splats:
 		outputlog("creating record for splat id: " + str(_i),2)
-		if splat_is_modified[_i]:
-			data_record["splats"]["splat"+str(_i)] = poolbytearray_to_base64string(splatImages[_i].get_data())
+		data_record["splats"]["splat"+str(_i)] = poolbytearray_to_base64string(splatImages[_i].get_data())
 				
 	time_function_end(time_record)
 	
@@ -1537,9 +935,10 @@ func load_from_data_record(data_record: Dictionary):
 
 	var time_record = time_function_start("load_from_data_record")
 
-	self.visible = data_record["visible"]
+	#self.visible = data_record["visible"]
 	self.smoothblending = data_record["smooth_blending"]
-	self.set_splat_number(data_record["num_splats"])
+	self.set_active_blocks_number(data_record["active_blocks"])
+	#self.set_splat_number(data_record["num_splats"])
 
 	# Set the terrain but don't trigger a rebuild of the altas images
 	for _i in data_record["textures"].size():
@@ -1548,12 +947,12 @@ func load_from_data_record(data_record: Dictionary):
 	for entry in data_record["splats"].keys():
 
 		var splat_idx = int(entry.replace("splat",""))
+		
 		splatImages[splat_idx].create_from_data(self.width, self.height, false, Image.FORMAT_RGBA8, base64string_to_poolbytearray(data_record["splats"][entry]))
+		outputlog("laoding splatimage: " + str(splatImages[splat_idx]),2)
 	
 	build_all_atlases()
-	update_splats()
-	# Mark the splats as unmodified as we have just loaded them so they haven't changed
-	mark_all_splats_modified(false)
+	update_splat_textures_from_images()
 
 	time_function_end(time_record)
 
