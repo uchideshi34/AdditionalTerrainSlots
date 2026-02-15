@@ -25,8 +25,6 @@ var smoothblending = false
 var num_splats = 0
 var global = null
 
-var can_bake_while_painting = true
-
 const BLOB_SIZE = 64.0
 const BLOB_OFFSET = 32.0
 const MAX_TEXTURE_PIXEL_SIZE = 2048 * 1.5 # Strictly speaking this isn't a hard max but 4096 is for 4 columns
@@ -386,14 +384,11 @@ func paint_terrain(splatpainter, mouse_position: Vector2, terrain_index: int, ra
 	outputlog("paint_terrain: index " + str(terrain_index) + " target_splat: " + str(int(terrain_index/3.0)) + " rate: " + str(rate),3)
 
 	if not painting_active:
-		start_painting()
+		start_painting(splatpainter, brush_size)
 
-	splatpainter.update_active_extraterrain(self)
-	splatpainter.update_brush_data(brush_size)
 	yield(splatpainter.blend_towards_channel(mouse_position, terrain_index, rate),"completed")
 
 	update_splat_textures_from_images()
-
 
 func set_smoothblending(button_pressed: bool):
 
@@ -407,12 +402,15 @@ var painting_active: bool = false
 var history_record = {"level": null, "splat_size": Vector2.ZERO, "before_splats_data": [], "after_splats_data": []}
 
 # Call this when user starts painting (mouse down)
-func start_painting():
+func start_painting(splatpainter, brush_size: float):
 	
 	if painting_active:
 		return
 	
 	outputlog("start_painting", 2)
+	splatpainter.update_active_extraterrain(self)
+	splatpainter.update_brush_data(brush_size)
+
 	painting_active = true
 	record_history_start_state()
 
@@ -587,6 +585,8 @@ func bake_terrain_to_texture():
 		# Render each tile
 		for ty in range(tiles_y):
 			for tx in range(tiles_x):
+
+				global.Editor.Windows["Accept"].dialog_text = "Baking terrain this may take a few seconds.\n" + "Baking tile " + str(tx + 1 + ty * tiles_x) + " out of " + str(tiles_x * tiles_y) + "."
 				var offset_x = tx * tile_size
 				var offset_y = ty * tile_size
 				
@@ -677,6 +677,7 @@ func bake_terrain_to_texture():
 
 	# If the warning is active then remove it
 	if global.Editor.Windows["Accept"].visible:
+		global.Editor.Quickswitch(global.Editor.ActiveToolname)
 		global.Editor.Windows["Accept"].visible = false
 
 	time_function_end(time_record)

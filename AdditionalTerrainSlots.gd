@@ -25,8 +25,10 @@ var areabrush
 var tool_is_active = false
 var is_painting = false
 var has_started_painting = false
+var has_any_painting_occurred = false
 
 var enable_baking = true
+var enable_bake_while_painting = false
 
 var paint_on_frame_number = 1
 var frame_count = 0
@@ -310,18 +312,7 @@ func make_expandedterrain_ui():
 	extraterrainui.sync_from_dd_terrain_button.connect("pressed", self, "on_sync_from_dd_terrain_button_pressed")
 	extraterrainui.sync_to_dd_terrain_button.connect("pressed", self, "on_sync_to_dd_terrain_button_pressed")
 
-func on_sync_from_dd_terrain_button_pressed():
 
-	outputlog("on_sync_from_dd_terrain_button_pressed",2)
-	# NEEDS SIGNIFICANT REWORK FOR ACTIVE BLOCKS
-	return
-
-func on_sync_to_dd_terrain_button_pressed():
-
-	outputlog("on_sync_to_dd_terrain_button_pressed",2)
-
-	# NEEDS SIGNIFICANT REWORK FOR ACTIVE BLOCKS
-	return
 
 func on_show_hide_button_toggled(button_pressed: bool):
 
@@ -470,6 +461,124 @@ func on_level_change(_ignore_this):
 
 		store_current_level = level
 
+#########################################################################################################
+##
+## SYNC WITH DD DATA FUNCTIONS
+##
+#########################################################################################################
+
+# Function to syn from DD terrain data
+func on_sync_from_dd_terrain_button_pressed():
+
+	outputlog("on_sync_from_dd_terrain_button_pressed",2)
+
+	# Sync terrain textures
+	var terrain = Global.World.GetCurrentLevel().Terrain
+	if terrain == null: return
+
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain == null: return
+
+	# Get the textures
+	for _i in terrain.textures.size():
+		extraterrain.set_terrain_texture(terrain.textures[_i].resource_path, _i, false)
+
+	# Get the smoothblending status
+	extraterrain.smoothblending = terrain.SmoothBlending
+	extraterrain.fill_channel(0)
+
+	if terrain.ExpandedSlots:
+		sync_from_rgba_splats_to_rgb_splats([terrain.splatImage, terrain.splatImage2],extraterrain.splatImages)
+	else:
+		sync_from_rgba_splats_to_rgb_splats([terrain.splatImage],extraterrain.splatImages)
+	
+	extraterrain.update_splat_textures_from_images()
+	extraterrain.update_terrain_atlas()
+	update_ui_from_terrain()
+
+# function to synchronise the splat images
+func sync_from_rgba_splats_to_rgb_splats(sources: Array, destinations: Array):
+
+	outputlog("sync_from_rgba_splats_to_rgb_splats: ",2)
+
+	if sources.size() == 0 || sources.size() > 2: return
+
+	if sources.size() * 4 > destinations.size() * 3:
+		outputlog("not enough space in the destination splats")
+		return
+
+	for img in sources:
+		img.lock()
+	for img in destinations:
+		img.lock()
+	
+	for _j in sources[0].get_height():
+		for _i in sources[0].get_width():
+
+			var colour_0 = sources[0].get_pixel(_i,_j)
+			destinations[0].set_pixel(_i, _j, Color(colour_0.r, colour_0.g, colour_0.b, 1.0))
+
+			if sources.size() > 1:
+				var colour_1 = sources[1].get_pixel(_i,_j)
+				destinations[1].set_pixel(_i, _j, Color(colour_0.a, colour_1.r, colour_1.g, 1.0))
+				destinations[2].set_pixel(_i, _j, Color(colour_1.b, colour_1.a, 0.0, 1.0))
+
+			else:
+				destinations[1].set_pixel(_i, _j, Color(colour_0.a, 0.0, 0.0, 1.0))
+	
+	for img in sources:
+		img.unlock()
+	for img in destinations:
+		img.unlock()
+
+func on_sync_to_dd_terrain_button_pressed():
+
+	outputlog("on_sync_to_dd_terrain_button_pressed",2)
+
+	# Sync terrain textures
+	var terrain = Global.World.GetCurrentLevel().Terrain
+	if terrain == null: return
+
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain == null: return
+
+	# Set smooth blending
+	Global.Editor.Tools["TerrainBrush"].SetSmoothBlending(extraterrain.smoothblending)
+
+	# Set expanded slots
+	Global.Editor.Tools["TerrainBrush"].ExpandSlots(true)
+
+	for _i in 8:
+		Global.Editor.Tools["TerrainBrush"].SetTextureFromWindow(safe_load_texture(extraterrain.textures[_i]), _i)
+	
+	sync_from_rgb_splats_to_rgab_splats(extraterrain.splatImages, [terrain.splatImage, terrain.splatImage2])
+	terrain.UpdateSplat()
+
+	
+
+# function to synchronise the splat images
+func sync_from_rgb_splats_to_rgab_splats(sources: Array, destinations: Array):
+
+	outputlog("sync_from_rgb_splats_to_rgab_splats: ",2)
+
+	for img in sources:
+		img.lock()
+	for img in destinations:
+		img.lock()
+	
+	for _j in sources[0].get_height():
+		for _i in sources[0].get_width():
+
+			var colour_0 = sources[0].get_pixel(_i,_j)
+			var colour_1 = sources[1].get_pixel(_i,_j)
+			var colour_2 = sources[2].get_pixel(_i,_j)
+			destinations[0].set_pixel(_i, _j, Color(colour_0.r, colour_0.g, colour_0.b, colour_1.r))
+			destinations[1].set_pixel(_i, _j, Color(colour_1.g, colour_1.b, colour_2.r, colour_2.g))
+	
+	for img in sources:
+		img.unlock()
+	for img in destinations:
+		img.unlock()
 
 #########################################################################################################
 ##
@@ -693,9 +802,13 @@ func on_tool_disable(tool_id):
 	tool_is_active = false
 	areabrush.hide_brush_stroke_preview()
 	paint_button_pressed = false
+
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
-	if extraterrain != null && extraterrainui.show_hide_button.pressed && enable_baking:
+
+	if extraterrain != null && extraterrainui.show_hide_button.pressed && enable_baking && has_any_painting_occurred:
 		extraterrain.bake_terrain_to_texture()
+	
+	has_any_painting_occurred = false
 
 #########################################################################################################
 ##
@@ -762,6 +875,7 @@ func start_of_painting():
 	if extraterrain != null:
 		
 		extraterrain.unbake_terrain()
+		has_any_painting_occurred = true
 
 func end_of_painting():
 
@@ -770,7 +884,7 @@ func end_of_painting():
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null:
 
-		if extraterrain.can_bake_while_painting && enable_baking:
+		if enable_bake_while_painting && enable_baking:
 			outputlog("enable_baking: " + str(enable_baking),2)
 			extraterrain.bake_terrain_to_texture()
 		
@@ -911,6 +1025,9 @@ func start() -> void:
 			.check_button("enable_baking", true, "Enable Image Baking")\
 				.connect_to_prop("loaded", self, "enable_baking")\
 				.connect_to_prop("toggled", self, "enable_baking")\
+			.check_button("enable_baking_while_painting", false, "Enable Baking While Painting")\
+				.connect_to_prop("loaded", self, "enable_bake_while_painting")\
+				.connect_to_prop("toggled", self, "enable_bake_while_painting")\
 			.h_box_container().enter()\
 				.label("Paint Every N Frames: ")\
 				.label().ref("paint_frame_slider_label")\
@@ -969,13 +1086,13 @@ func start() -> void:
 	if Global.Editor.LevelOptions.get_parent().find_node("LevelUp") != null:
 		Global.Editor.LevelOptions.get_parent().find_node("LevelUp").connect("pressed", self, "on_level_change",[0])
 
-
 	update_ui_from_terrain(Global.World.GetCurrentLevel())
 
 	store_current_level = Global.World.GetCurrentLevel()
 
 	if extraterrain != null:
-		extraterrain.bake_terrain_to_texture()
+		if enable_baking:
+			extraterrain.bake_terrain_to_texture()
 		splatpainter.update_active_extraterrain(extraterrain)
 
 	setup_resize_listener()

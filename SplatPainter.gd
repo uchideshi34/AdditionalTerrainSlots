@@ -93,8 +93,9 @@ func _init(parent: Node2D, initial_size: Vector2, shader):
 func update_active_extraterrain(new_extraterrain: MeshInstance2D):
 
 	outputlog("update_active_extraterrain: " + str(new_extraterrain), 3)
+	if new_extraterrain == self.extraterrain: return
 
-	extraterrain = new_extraterrain
+	self.extraterrain = new_extraterrain
 
 	# Change the level this painter lives on to match the extra terrain
 	if self.get_parent() != null:

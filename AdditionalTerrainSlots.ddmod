@@ -1,8 +1,9 @@
 {
     "name": "AdditionalTerrainSlots",
     "unique_id": "uchideshi34.AdditionalTerrainSlots",
-    "version": "0.9.6",
+    "version": "0.9.7",
     "author": "uchideshi34",
     "description": "AdditionalTerrainSlots",
-    "dd_version": "1.2.0.1"
+    "dd_version": "1.2.0.1",
+    "dependencies": [ "CreepyCre._Lib" ]
 }
