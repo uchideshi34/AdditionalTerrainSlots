@@ -63,12 +63,11 @@ func _init(parent: Node2D, initial_size: Vector2, shader):
 
 	var mat = ShaderMaterial.new()
 	mat.shader = splat_shader.duplicate() # duplicate ensures fresh instance
-
 	self.material = mat
-	
 	self.z_index = 0
+	self.visible = false
 
-	for i in MAX_SPLATS:
+	for _i in MAX_SPLATS:
 		var vp = Viewport.new()
 		vp.size = size
 		vp.usage = Viewport.USAGE_2D
@@ -90,6 +89,18 @@ func _init(parent: Node2D, initial_size: Vector2, shader):
 		terrain_viewports.append(vp)
 		terrain_meshes.append(mesh_instance)
 
+# Function to resize the splatpainter
+func resize(new_world_size: Vector2):
+
+	size = new_world_size / BLOB_SIZE
+	update_mesh(size)
+
+	for _i in MAX_SPLATS:
+		terrain_viewports[_i].size = size
+		terrain_meshes[_i].mesh = self.mesh
+
+
+# Update the current active terrain
 func update_active_extraterrain(new_extraterrain: MeshInstance2D):
 
 	outputlog("update_active_extraterrain: " + str(new_extraterrain), 3)
@@ -102,7 +113,6 @@ func update_active_extraterrain(new_extraterrain: MeshInstance2D):
 		self.get_parent().remove_child(self)
 
 	extraterrain.level.add_child(self)
-	self.visible = true
 
 # Function to update the mesh to the World size
 func update_mesh(woxelDimensions: Vector2):

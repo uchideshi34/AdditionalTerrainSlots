@@ -319,6 +319,7 @@ func on_show_hide_button_toggled(button_pressed: bool):
 	outputlog("on_show_hide_button_toggled: " + str(button_pressed),2)
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null:
+		extraterrain.is_hidden = not button_pressed
 		extraterrain.visible = button_pressed
 		if not button_pressed:
 			extraterrain.unbake_terrain()
@@ -411,6 +412,8 @@ func update_terrain_from_ui():
 		if extraterrainui.active_terrain_index > (extraterrainui.terrain_slots_button.selected * 4 + 12):
 			extraterrainui.set_active_terrain(0)
 		
+		extraterrain.is_hidden = extraterrainui.show_hide_button.pressed
+		extraterrain.visible = not extraterrain.is_hidden
 		on_smoothblending_toggled(extraterrainui.smoothblending_button.pressed)
 
 # Function to update the ui to reflect the current level's values
@@ -419,13 +422,11 @@ func update_ui_from_terrain(level):
 	outputlog("update_ui_from_terrain: " + str(level) + " level.ID " + str(level.ID),2)
 
 	var extraterrain = level.get_node_or_null(NODE_NAME)
-	outputlog("extraterrain.get_parent(): " + str(extraterrain.get_parent()))
 
 	if extraterrain != null:
 		outputlog("extraterrain is not null: " + str(extraterrain),2)
 
 		activate_terrain_button.pressed = true
-		outputlog("extraterrain.get_parent(): " + str(extraterrain.get_parent()))
 
 		extraterrainui.set_block_signals(true)
 		extraterrainui.terrain_slots_button.select(extraterrain.active_blocks-1-2)
@@ -436,7 +437,7 @@ func update_ui_from_terrain(level):
 		
 		extraterrainui.set_active_terrain(0)
 		extraterrainui.smoothblending_button.pressed = extraterrain.smoothblending
-		extraterrainui.show_hide_button.pressed = extraterrain.visible
+		extraterrainui.show_hide_button.pressed = not extraterrain.is_hidden
 		extraterrainui.set_block_signals(false)
 
 	else:
@@ -446,20 +447,34 @@ func update_ui_from_terrain(level):
 # When a level is changed
 func on_level_change(_ignore_this):
 
+	outputlog("on_level_change",2)
+
 	var level = Global.World.GetCurrentLevel()
 
 	update_ui_from_terrain(level)
+
 	if level != store_current_level:
+		outputlog("this is a new level from the stored one",2)
 		var extraterrain = level.get_node_or_null(NODE_NAME)
 		# Bake the new level's terrain if it has one
-		if extraterrain != null && not tool_is_active && enable_baking:
-			extraterrain.bake_terrain_to_texture()
-		
-		# Unbake the old terrain if it exists
-		if store_current_level.get_node_or_null(NODE_NAME):
-			store_current_level.get_node_or_null(NODE_NAME).unbake_terrain()
+		if extraterrain != null:
+			extraterrain.update_splat_textures_from_images()
+			if not tool_is_active && enable_baking:
+				extraterrain.bake_terrain_to_texture()
 
 		store_current_level = level
+
+# Function to bake all terrain
+func bake_all_terrain():
+
+	outputlog("bake_all_terrain: enable_baking" + str(enable_baking),2)
+
+	if not enable_baking: return
+
+	for level in Global.World.levels:
+		var extraterrain = level.get_node_or_null(NODE_NAME)
+		if extraterrain != null:
+			extraterrain.bake_terrain_to_texture()
 
 #########################################################################################################
 ##
@@ -554,8 +569,6 @@ func on_sync_to_dd_terrain_button_pressed():
 	sync_from_rgb_splats_to_rgab_splats(extraterrain.splatImages, [terrain.splatImage, terrain.splatImage2])
 	terrain.UpdateSplat()
 
-	
-
 # function to synchronise the splat images
 func sync_from_rgb_splats_to_rgab_splats(sources: Array, destinations: Array):
 
@@ -579,6 +592,101 @@ func sync_from_rgb_splats_to_rgab_splats(sources: Array, destinations: Array):
 		img.unlock()
 	for img in destinations:
 		img.unlock()
+
+#########################################################################################################
+##
+## COPY LEVEL FUNCTIONS
+##
+#########################################################################################################
+
+var cloneleveloptionbutton = null
+var store_level_list = []
+var updating_level_id_data = false
+
+# Copy the colour data where required
+func _copy_custom_data_to_new_level(source_level_index: int):
+
+	outputlog("_copy_custom_data_to_new_level: " + str(source_level_index),2)
+
+	var source_level = Global.World.TryGetLevel(source_level_index)
+	if source_level == null: return
+
+	var extraterrain = source_level.get_node_or_null(NODE_NAME)
+	if extraterrain == null: return
+
+	var new_level = find_new_level_created()
+	if new_level == null: return
+
+	initialise_extraterrain(new_level)
+
+	# Get its extraterrain record
+	var new_extraterrain = new_level.get_node_or_null(NODE_NAME)
+	if new_extraterrain != null:
+		new_extraterrain.load_from_data_record(extraterrain.get_data_record())
+	
+		update_ui_from_terrain()
+
+		# Bake the terrain if needed
+		if extraterrainui.show_hide_button.pressed && enable_baking:
+			new_extraterrain.bake_terrain_to_texture()
+
+
+# When create new level is pressed
+func _on_create_new_level_pressed():
+
+	outputlog("_on_create_new_level_pressed",2)
+
+	# If we are cloning a level, ie selected index is more than zero, then do something but wait a bit first
+	var copy_from_level_id = cloneleveloptionbutton.selected
+	if copy_from_level_id > 0:
+
+		outputlog("copy level active: " + str(copy_from_level_id),2)
+
+		var timer = Timer.new()
+		timer.autostart = false
+		timer.one_shot = true
+		Global.Editor.get_node("Windows").add_child(timer)
+
+		# If we are updating the level id data wait for that to finish
+		while updating_level_id_data:
+			yield(timer.get_tree(), "idle_frame")
+		
+		timer.start(1.0)
+		yield(timer,"timeout")
+		_copy_custom_data_to_new_level(copy_from_level_id)
+	
+		Global.Editor.get_node("Windows").remove_child(timer)
+		timer.queue_free()
+
+# Find the new level window
+func register_signals_for_copy_level():
+
+	outputlog("register_signals_for_copy_level",2)
+
+	var newlevelwindow = Global.Editor.Windows["NewLevel"]
+	newlevelwindow.connect("about_to_show", self, "on_new_level_window_opened")
+
+	var valign = newlevelwindow.get_node("Margins").get_node("VAlign")
+
+	# If we have successfully found the Create Level window then connect to the "Create" button 
+	if valign != null:
+		if valign.get_node("Buttons") != null && valign.get_node("CloneLevel") != null:
+			if valign.get_node("Buttons").get_node("OkayButton") != null && valign.get_node("CloneLevel").get_node("CloneLevelOptionButton") != null:
+				valign.get_node("Buttons").get_node("OkayButton").connect("pressed", self, "_on_create_new_level_pressed")
+				cloneleveloptionbutton = valign.get_node("CloneLevel").get_node("CloneLevelOptionButton")
+
+# Function to capture when a new level window is opened so we can store the current level list
+func on_new_level_window_opened():
+
+	store_level_list = Global.World.levels.duplicate(true)
+
+# Compare the current list of levels with the stored list and a level that is not in the stored list is the new one
+func find_new_level_created():
+
+	for level in Global.World.levels:
+		if not level in store_level_list:
+			return level
+	return null
 
 #########################################################################################################
 ##
@@ -672,6 +780,7 @@ func erase_extraterrain_data(level_id: int):
 func load_extraterrain_data():
 
 	outputlog("load_extraterrain_data",2)
+	updating_level_id_data = true
 	# For each level
 	for level in Global.World.levels:
 		outputlog("checking level for extraterrain data: " + str(level.ID),1)
@@ -684,7 +793,8 @@ func load_extraterrain_data():
 			var extraterrain = level.get_node_or_null(NODE_NAME)
 			if extraterrain != null:
 				extraterrain.load_from_data_record(get_extraterrain_data(level.ID))
-		
+	
+	updating_level_id_data = false
 
 
 # Called when a new level might have been created or deleted. We need to move the data records as they are keyed off level.ID which can change
@@ -754,16 +864,12 @@ var paint_button_pressed: bool = false
 func update(delta : float):
 
 	if tool_is_active && paint_button_pressed:
-		frame_count += 1
-		if frame_count % paint_on_frame_number == 0:
-			outputlog("delta: " + str(delta) + " frame_count: " + str(frame_count),2)
-			# If this is the first frame of painting, then
-			if not has_started_painting:
-				start_of_painting()
-				has_started_painting = true
-			paint_terrain(frame_count * 0.05 * extraterrainui.intensity_slider.value)
-			
-			frame_count = 0
+		# If this is the first frame of painting, then
+		if not has_started_painting:
+			start_of_painting()
+			has_started_painting = true
+		paint_terrain(0.05 * extraterrainui.intensity_slider.value)
+		
 	else:
 		# If we had started a painting event and now the painting button isn't pressed and the painting function has completed. Possibly overkill on statuses
 		# This ensures that we aren't finishing actually painting when we bake the terrain
@@ -773,7 +879,6 @@ func update(delta : float):
 
 
 # this method is called whenever a mod created tool detects a user input on the canvas
-# This function is not used in this implementation as the active elements have moved to the Scatter Tool
 func on_content_input(event):
 
 	# do something after a mouse click is detected after the object tool created a new preview
@@ -786,6 +891,7 @@ func on_content_input(event):
 		areabrush.set_update_parent_node(Global.World.GetCurrentLevel())
 		areabrush.show_brush_stroke_preview(Global.WorldUI.get_MousePosition())
 
+# Function called when the tool is enabled.
 func on_tool_enable(tool_id):
 
 	outputlog("on_tool_enable: " + str(tool_id),2)
@@ -793,8 +899,10 @@ func on_tool_enable(tool_id):
 	tool_is_active = true
 	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 	if extraterrain != null:
+		update_ui_from_terrain(Global.World.GetCurrentLevel())
 		extraterrain.unbake_terrain()
 
+# FUnction called when the tool is disabled
 func on_tool_disable(tool_id):
 
 	outputlog("on_tool_disable: " + str(tool_id),2)
@@ -906,7 +1014,17 @@ func resize_all_terrain( up_delta_sq: int, down_delta_sq: int, right_delta_sq: i
 		var extraterrain = level.get_node_or_null(NODE_NAME)
 		if extraterrain != null:
 			extraterrain.resize(up_delta_sq, down_delta_sq, right_delta_sq, left_delta_sq)
+	
+	if splatpainter != null:
+		splatpainter.resize(Global.World.WoxelDimensions)
 
+	# Manage baking on the current level
+	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
+	if extraterrain != null:
+		extraterrain.unbake_terrain()
+		if enable_baking && not tool_is_active:
+			extraterrain.bake_terrain_to_texture()
+			
 func setup_resize_listener():
 
 	outputlog("setup_resize_listener",1)
@@ -1075,7 +1193,6 @@ func start() -> void:
 	areabrush.radius_in_pixels = 256.0 * 8 * 0.5
 
 	load_extraterrain_data()
-	var extraterrain = Global.World.GetCurrentLevel().get_node_or_null(NODE_NAME)
 
 	Global.Editor.Windows["NewLevel"].connect("popup_hide", self, "on_possible_new_level")
 
@@ -1086,13 +1203,9 @@ func start() -> void:
 	if Global.Editor.LevelOptions.get_parent().find_node("LevelUp") != null:
 		Global.Editor.LevelOptions.get_parent().find_node("LevelUp").connect("pressed", self, "on_level_change",[0])
 
-	update_ui_from_terrain(Global.World.GetCurrentLevel())
-
-	store_current_level = Global.World.GetCurrentLevel()
-
-	if extraterrain != null:
-		if enable_baking:
-			extraterrain.bake_terrain_to_texture()
-		splatpainter.update_active_extraterrain(extraterrain)
+	store_current_level = null
 
 	setup_resize_listener()
+	register_signals_for_copy_level()
+
+	bake_all_terrain()

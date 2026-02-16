@@ -25,10 +25,11 @@ var smoothblending = false
 var num_splats = 0
 var global = null
 
+var is_hidden = false
+
 const BLOB_SIZE = 64.0
 const BLOB_OFFSET = 32.0
-const MAX_TEXTURE_PIXEL_SIZE = 2048 * 1.5 # Strictly speaking this isn't a hard max but 4096 is for 4 columns
-const ALTAS_COLUMNS_NUMBER = 4
+const MAX_TEXTURE_PIXEL_SIZE = 4096 # Strictly speaking this isn't a hard max but 4096 is for 4 columns
 const NODE_NAME = "ExtraTerrain987234"
 const MAX_SPLATS = 6
 
@@ -168,7 +169,7 @@ func string_to_poolbytearray(s: String) -> PoolByteArray:
 # Init function
 func _init(parent_level, woxelDimensions: Vector2):
 
-	outputlog("_init: level: " + str(parent_level) + " size: " + str(woxelDimensions),0)
+	outputlog("_init: level: " + str(parent_level) + " size: " + str(woxelDimensions),1)
 
 	width = int(woxelDimensions.x / BLOB_SIZE)
 	height = int(woxelDimensions.y / BLOB_SIZE)
@@ -268,8 +269,6 @@ func set_active_blocks_number(target_number: int):
 func set_splat_number(target_number: int):
 
 	outputlog("set_splat_number: " + str(target_number) + " current number: " + str(num_splats),2)
-	# The textures are the source of truth while active so copy them to images first where value
-	update_splat_images_from_textures()
 
 	if num_splats < target_number:
 		for _i in target_number-num_splats:
@@ -486,7 +485,7 @@ func resize_splat(original: Image, splat_idx: int, original_size: Vector2, up_de
 	else:
 		img.fill(Color(0.0, 0.0, 0.0, 0.0))
 	
-	img.blit_rect(self, Rect2(0.0, 0.0, original_size.x, original_size.y), Vector2(left_delta, up_delta))
+	img.blit_rect(original, Rect2(0.0, 0.0, original_size.x, original_size.y), Vector2(left_delta, up_delta))
 
 	original.create_from_data(new_size.x, new_size.y, false, Image.FORMAT_RGBA8, img.get_data())
 
@@ -503,12 +502,15 @@ var is_baking: bool = false
 
 func bake_terrain_to_texture():
 
-	if is_terrain_baked || is_baking:
-		return
+	if is_baking: return
 	
 	is_baking = true
 	
 	outputlog("Baking terrain to static texture", 2)
+
+	if is_terrain_baked || not self.visible:
+		outputlog("Baking aborted: is_terrain_baked: " + str(is_terrain_baked) + " self.visible: " + str(self.visible), 2)
+		return
 	
 	var time_record = time_function_start("bake_terrain_to_texture")
 	
@@ -518,7 +520,6 @@ func bake_terrain_to_texture():
 	var tiles_y = int(ceil(full_size.y / tile_size))
 	
 	outputlog("Rendering " + str(tiles_x) + "x" + str(tiles_y) + " tiles", 2)
-
 	
 	# Create viewport for tiled rendering
 	terrain_viewport = Viewport.new()
@@ -580,13 +581,15 @@ func bake_terrain_to_texture():
 	# If this is too big to render as a single image then tile is
 	if full_size.x > (16384 - 256) || full_size.x > (16384 - 256):
 
-		global.Editor.Warn("Baking Terrain", "Baking terrain this may take a few seconds.")
+		var base_warn_string = "Baking terrain for level, " + str(level.Label) + ", this may take a few seconds."
+
+		global.Editor.Warn("Baking Terrain", base_warn_string)
 	
 		# Render each tile
 		for ty in range(tiles_y):
 			for tx in range(tiles_x):
 
-				global.Editor.Windows["Accept"].dialog_text = "Baking terrain this may take a few seconds.\n" + "Baking tile " + str(tx + 1 + ty * tiles_x) + " out of " + str(tiles_x * tiles_y) + "."
+				global.Editor.Windows["Accept"].dialog_text = base_warn_string + "\n" + "Baking tile " + str(tx + 1 + ty * tiles_x) + " out of " + str(tiles_x * tiles_y) + "."
 				var offset_x = tx * tile_size
 				var offset_y = ty * tile_size
 				
@@ -601,7 +604,7 @@ func bake_terrain_to_texture():
 				terrain_viewport.update()
 				
 				yield(get_tree(), "idle_frame")
-				#yield(get_tree(), "idle_frame")
+				yield(get_tree(), "idle_frame")
 				
 				# Get tile image
 				var tile_img = terrain_viewport.get_texture().get_data()
@@ -909,7 +912,7 @@ func get_data_record() -> Dictionary:
 	var time_record = time_function_start("get_data_record")
 
 	var data_record = {
-		"visible": self.visible,
+		"is_hidden": self.is_hidden,
 		"smooth_blending": smoothblending,
 		"textures": [],
 		"num_splats": num_splats,
@@ -936,10 +939,10 @@ func load_from_data_record(data_record: Dictionary):
 
 	var time_record = time_function_start("load_from_data_record")
 
-	#self.visible = data_record["visible"]
+	self.is_hidden = data_record["is_hidden"]
+	self.visible = not data_record["is_hidden"]
 	self.smoothblending = data_record["smooth_blending"]
 	self.set_active_blocks_number(data_record["active_blocks"])
-	#self.set_splat_number(data_record["num_splats"])
 
 	# Set the terrain but don't trigger a rebuild of the altas images
 	for _i in data_record["textures"].size():
@@ -950,7 +953,6 @@ func load_from_data_record(data_record: Dictionary):
 		var splat_idx = int(entry.replace("splat",""))
 		
 		splatImages[splat_idx].create_from_data(self.width, self.height, false, Image.FORMAT_RGBA8, base64string_to_poolbytearray(data_record["splats"][entry]))
-		outputlog("laoding splatimage: " + str(splatImages[splat_idx]),2)
 	
 	build_all_atlases()
 	update_splat_textures_from_images()
