@@ -24,7 +24,7 @@ const MAX_SPLATS = 4
 
 # Logging Functions
 const ENABLE_LOGGING = true
-var logging_level = 2
+var logging_level = 0
 
 signal launch_terrain_window
 signal terrain_changed

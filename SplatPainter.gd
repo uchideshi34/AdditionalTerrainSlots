@@ -17,7 +17,7 @@ const MAX_SPLATS = 6
 
 # Logging Functions
 const ENABLE_LOGGING = true
-var logging_level = 2
+var logging_level = 0
 
 #########################################################################################################
 ##

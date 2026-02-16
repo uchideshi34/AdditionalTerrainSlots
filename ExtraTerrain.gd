@@ -37,7 +37,7 @@ signal record_history
 
 # Logging Functions
 const ENABLE_LOGGING = true
-var logging_level = 2
+var logging_level = 0
 
 #########################################################################################################
 ##
