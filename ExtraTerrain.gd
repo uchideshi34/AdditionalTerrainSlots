@@ -680,10 +680,40 @@ func bake_terrain_to_texture():
 
 	# If the warning is active then remove it
 	if global.Editor.Windows["Accept"].visible:
-		global.Editor.Quickswitch(global.Editor.ActiveToolname)
 		global.Editor.Windows["Accept"].visible = false
-
+		
+		# Store the toolname (noting we might get there with shortcuts)
+		var store_toolname = global.Editor.ActiveToolName
+		# Clean the pipes
+		refresh_signal_on_toolbars()
+		# If we were on a tool, then go back to it
+		if store_toolname != null:
+			global.Editor.Toolset.Quickswitch(store_toolname)
+			
 	time_function_end(time_record)
+
+# DD gets lost when the window is closed so flip the toolbar buttons until it feels better
+func refresh_signal_on_toolbars():
+
+	var store_button = null
+
+	outputlog("refresh_signal_on_toolbars",2)
+
+	for button in global.Editor.Toolset.get_children():
+		if button is Button:
+			if button.toggle_mode && button.pressed:
+				outputlog("toggle signal for button: " + str(button))
+				store_button = button
+	
+	if store_button == null: return
+
+	for button in global.Editor.Toolset.get_children():
+		if button is Button:
+			if button.toggle_mode && not button.pressed:
+				outputlog("flip buttons")
+				button.pressed = true
+				store_button.pressed = true
+				return
 
 func unbake_terrain():
 
@@ -896,7 +926,6 @@ func get_texture_scale(texture: Texture):
 	var pixels_per_unit = 1.0
 	if texture == null: return Vector2.ONE
 	return Vector2(texture.get_width(), texture.get_height())
-
 
 #########################################################################################################
 ##

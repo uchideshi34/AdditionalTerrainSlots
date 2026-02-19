@@ -41,7 +41,7 @@ const EXTRATERRAINDATA = "extraterrain_data"
 
 # Logging Functions
 const ENABLE_LOGGING = true
-var logging_level = 2
+var logging_level = 4
 
 #########################################################################################################
 ##
@@ -277,6 +277,7 @@ func on_brush_size_slider_changed(value: float):
 	# Update the areabrush display
 	areabrush.hide_brush_stroke_preview()
 	areabrush.radius_in_pixels = 256.0 * value * 0.5
+	areabrush.show_brush_stroke_preview(Global.WorldUI.get_MousePosition())
 
 func make_expandedterrain_ui():
 
@@ -311,8 +312,6 @@ func make_expandedterrain_ui():
 	extraterrainui.show_hide_button.connect("toggled", self, "on_show_hide_button_toggled")
 	extraterrainui.sync_from_dd_terrain_button.connect("pressed", self, "on_sync_from_dd_terrain_button_pressed")
 	extraterrainui.sync_to_dd_terrain_button.connect("pressed", self, "on_sync_to_dd_terrain_button_pressed")
-
-
 
 func on_show_hide_button_toggled(button_pressed: bool):
 
@@ -475,6 +474,13 @@ func bake_all_terrain():
 		var extraterrain = level.get_node_or_null(NODE_NAME)
 		if extraterrain != null:
 			extraterrain.bake_terrain_to_texture()
+
+func update_brush_size_slider(steps: int):
+
+	outputlog("update_brush_size_slider: " + str(steps),3)
+
+	extraterrainui.brush_size_slider.slider_and_spinbox_change(extraterrainui.brush_size_slider.value + steps * extraterrainui.brush_size_slider.step,false)
+
 
 #########################################################################################################
 ##
@@ -999,6 +1005,137 @@ func end_of_painting():
 		# Record history
 		extraterrain.end_painting()
 
+#########################################################################################################
+##
+## PAN CONTROLS FUNCTION
+##
+#########################################################################################################
+
+var trackpanmanager = null
+
+func on_pan_action(value):
+
+	outputlog("on_pan_action: " + str(value))
+
+	update_brush_size_slider(int(value))
+
+# Set up the trackpad monitoring class
+func setup_trackpad_monitoring():
+
+	trackpanmanager = TrackpadManager.new()
+	trackpanmanager.connect("pan_event_y_direction", self, "on_pan_action")
+
+class TrackpadManager extends Node:
+
+	var pan_value = 0.0
+	var pan_y_direction = 1
+
+	const PAN_INCREMENT = 0.5
+
+	signal pan_event_y_direction
+
+	func update_panning(event):
+		# Check if the direction is still the same
+		if -sign(event.delta.y) != pan_y_direction:
+			pan_value = 0.0
+			pan_y_direction = -sign(event.delta.y)
+		pan_value += abs(event.delta.y)
+		if pan_value > PAN_INCREMENT:
+			self.emit_signal("pan_event_y_direction",pan_y_direction)
+			pan_value = 0.0
+	
+	func reset_panning():
+		pan_value = 0.0
+		pan_y_direction = 0
+
+
+# Register the actions for mouse wheel events
+func register_mouse_wheel_events():
+
+	if not InputMap.has_action("new_mouse_wheel_up"):
+		var input_up = InputEventMouseButton.new()
+		input_up.pressed = true
+		input_up.button_index = BUTTON_WHEEL_UP
+
+		InputMap.add_action("new_mouse_wheel_up")
+		InputMap.action_add_event("new_mouse_wheel_up", input_up)
+
+	if not InputMap.has_action("new_mouse_wheel_down"):
+		var input_down = InputEventMouseButton.new()
+		input_down.pressed = true
+		input_down.button_index = BUTTON_WHEEL_DOWN
+
+		InputMap.add_action("new_mouse_wheel_down")
+		InputMap.action_add_event("new_mouse_wheel_down", input_down)
+
+
+#########################################################################################################
+##
+## INPUT CAPTURE FUNCTIONS
+##
+#########################################################################################################
+
+# Function to respond to unhandled mouse events
+func on_unhandled_mouse_event(event):
+
+	outputlog("on_unhandled_mouse_event",4)
+
+	if tool_is_active:
+		if Input.is_action_just_released("new_mouse_wheel_up",true):
+			update_brush_size_slider(1)
+		if Input.is_action_just_released("new_mouse_wheel_down",true):
+			update_brush_size_slider(-1)
+
+# Function to respond to unhandled key events
+func on_unhandled_pan_event(event):
+
+	outputlog("on_unhandled_pan_event",4)
+	if tool_is_active:
+		if trackpanmanager != null:
+			trackpanmanager.update_panning(event)
+		
+# Function to respond to unhandled key events
+func on_unhandled_key_event(event):
+
+	outputlog("on_unhandled_key_event",4)
+
+# Function to set up the 
+func set_up_input_capture():
+
+	outputlog("set_up_input_capture",0)
+	var unhandledeventemitter = UnhandledEventEmitter.new()
+	unhandledeventemitter.global = Global
+	Global.World.add_child(unhandledeventemitter)
+	unhandledeventemitter.connect("key_input", self, "on_unhandled_key_event")
+	unhandledeventemitter.connect("mouse_input", self, "on_unhandled_mouse_event")
+	unhandledeventemitter.connect("pan_input", self, "on_unhandled_pan_event")
+
+# Class to emit unhandled events
+class UnhandledEventEmitter extends Node:
+
+	var global = null
+
+	signal key_input
+	signal mouse_input
+	signal pan_input
+
+	func _unhandled_input(event):
+
+		if not global.Editor.SearchHasFocus:
+			var focus = global.Editor.GetFocus()
+			if focus == null || (not focus is LineEdit && not focus is Tree):
+				if event is InputEventKey:
+					self.emit_signal("key_input", event)
+
+	func _input(event):
+
+		if not global.Editor.SearchHasFocus:
+			var focus = global.Editor.GetFocus()
+			if focus == null || (not focus is LineEdit && not focus is Tree):
+				if event is InputEventMouse:
+					self.emit_signal("mouse_input", event)
+				if event is InputEventPanGesture:
+					self.emit_signal("pan_input", event)
 
 #########################################################################################################
 ##
@@ -1107,6 +1244,8 @@ func on_preferences_apply_pressed():
 	yield(timer,"timeout")
 	
 	enable_baking = _lib_mod_config.enable_baking
+	logging_level = _lib_mod_config.logging_level
+	enable_bake_while_painting = _lib_mod_config.enable_bake_while_painting
 
 	Global.Editor.get_node("Windows").remove_child(timer)
 	timer.queue_free()
@@ -1146,21 +1285,6 @@ func start() -> void:
 			.check_button("enable_baking_while_painting", false, "Enable Baking While Painting")\
 				.connect_to_prop("loaded", self, "enable_bake_while_painting")\
 				.connect_to_prop("toggled", self, "enable_bake_while_painting")\
-			.h_box_container().enter()\
-				.label("Paint Every N Frames: ")\
-				.label().ref("paint_frame_slider_label")\
-				.label(" ")\
-				.h_slider("paint_frame_slider",1)\
-					.with("max_value",5)\
-					.with("min_value",1)\
-					.with("step",1)\
-					.connect_current("loaded", self, "update_config_label", [_lib_config_builder.get_ref("paint_frame_slider_label")])\
-					.connect_current("value_changed", self, "update_config_label", [_lib_config_builder.get_ref("paint_frame_slider_label")])\
-					.connect_to_prop("loaded", self, paint_on_frame_number)\
-					.connect_to_prop("value_changed", self, paint_on_frame_number)\
-					.size_flags_h(Control.SIZE_EXPAND_FILL)\
-					.size_flags_v(Control.SIZE_FILL)\
-			.exit()\
 			.build()
 
 		var _lib_mod_meta = Global.API.ModRegistry.get_mod_info("CreepyCre._Lib").mod_meta
@@ -1209,3 +1333,9 @@ func start() -> void:
 	register_signals_for_copy_level()
 
 	bake_all_terrain()
+
+	set_up_input_capture()
+
+	register_mouse_wheel_events()
+	setup_trackpad_monitoring()
+	

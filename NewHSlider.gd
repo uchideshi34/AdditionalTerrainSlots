@@ -8,6 +8,10 @@ var hbox: HBoxContainer
 var timer: Timer
 var slider_wait_time = 1.0
 var value = 0.0
+var step = 0.0
+
+var icon: TextureRect
+var label: Label
 
 signal emit_history_event_signal
 signal value_changed
@@ -31,7 +35,7 @@ func outputlog(msg,level=0):
 		pass
 
 # Create a linked slider because the standard one whinges about property values not being set
-func _init(vbox: Container = null, default: float = 0.0, minimum: float = 0.0, maximum: float = 1.0, step: float = 0.1, exp_edit: bool = false, log_level: int = 0):
+func _init(vbox: Container = null, default: float = 0.0, minimum: float = 0.0, maximum: float = 1.0, def_step: float = 0.1, exp_edit: bool = false, log_level: int = 0):
 
 	logging_level = log_level
 
@@ -45,7 +49,7 @@ func _init(vbox: Container = null, default: float = 0.0, minimum: float = 0.0, m
 	hslider.max_value = maximum
 	hslider.min_value = minimum
 	
-	hslider.step = step
+	hslider.step = def_step
 	hslider.size_flags_horizontal = 3
 	hslider.size_flags_vertical = 3
 	hslider.exp_edit = exp_edit
@@ -60,7 +64,7 @@ func _init(vbox: Container = null, default: float = 0.0, minimum: float = 0.0, m
 	spinbox.max_value = maximum
 	spinbox.min_value = minimum
 	spinbox.value = default
-	spinbox.step = step
+	spinbox.step = def_step
 	spinbox.align = 1
 	spinbox.connect("value_changed",self,"slider_change",[hslider,false])
 	hslider.connect("value_changed",self,"slider_change",[spinbox,true])
@@ -72,6 +76,7 @@ func _init(vbox: Container = null, default: float = 0.0, minimum: float = 0.0, m
 	hbox.add_child(timer)
 
 	spinbox.get_line_edit().expand_to_text_length = true
+	self.step = def_step
 
 	# Silly work around to get the default value to display properly
 	hslider.value = default
@@ -116,6 +121,8 @@ func slider_and_spinbox_change(new_value: float, suppress_signal: bool):
 
 	outputlog("slider_and_spinbox_change",2)
 
+	if new_value < hslider.min_value || new_value > hslider.max_value: return
+
 	value = new_value
 
 	if suppress_signal:
@@ -134,3 +141,17 @@ func start_slider_timer(value: float = -1.0):
 		timer.start(slider_wait_time)
 	else:
 		timer.start(value)
+	
+	
+func add_icon(texture: Texture, index: int = 0):
+
+	icon = TextureRect.new()
+	icon.texture = texture
+	self.hbox.add_child(icon)
+	self.hbox.move_child(icon,index)
+
+func add_label(text: String, index: int = 0):
+
+	label = Label.new()
+	self.hbox.add_child(label)
+	self.hbox.move_child(label, index)

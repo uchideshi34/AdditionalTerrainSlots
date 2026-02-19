@@ -19,7 +19,7 @@ var display_preview_as_line = null
 
 # Logging Functions
 const ENABLE_LOGGING = true
-const LOGGING_LEVEL = 3
+const LOGGING_LEVEL = 0
 
 func outputlog(msg,level=0):
 	if ENABLE_LOGGING:
