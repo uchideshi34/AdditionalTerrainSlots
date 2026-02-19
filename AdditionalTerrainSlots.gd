@@ -411,7 +411,7 @@ func update_terrain_from_ui():
 		if extraterrainui.active_terrain_index > (extraterrainui.terrain_slots_button.selected * 4 + 12):
 			extraterrainui.set_active_terrain(0)
 		
-		extraterrain.is_hidden = extraterrainui.show_hide_button.pressed
+		extraterrain.is_hidden = not extraterrainui.show_hide_button.pressed
 		extraterrain.visible = not extraterrain.is_hidden
 		on_smoothblending_toggled(extraterrainui.smoothblending_button.pressed)
 

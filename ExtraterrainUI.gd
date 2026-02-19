@@ -493,7 +493,7 @@ class TerrainEntry extends HBoxContainer:
 
 	# Logging Functions
 	const ENABLE_LOGGING = true
-	var logging_level = 2
+	var logging_level = 0
 
 	func outputlog(msg,level=0):
 		if ENABLE_LOGGING:
