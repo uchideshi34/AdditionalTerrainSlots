@@ -1,5 +1,3 @@
-class_name NewHSlider
-
 var script_class = "tool"
 
 var hslider: HSlider

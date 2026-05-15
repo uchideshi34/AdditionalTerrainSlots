@@ -217,7 +217,6 @@ func blend_towards_channel(mouse_position: Vector2, channel: int, rate: float):
 	var output_splat_images = []
 	for _i in extraterrain.num_splats:
 
-
 		# Create texture from tile
 		var tex = terrain_viewports[_i].get_texture()
 		var img = tex.get_data()

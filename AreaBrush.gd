@@ -1,6 +1,4 @@
-class_name AreaBrush
 
-#Global.World.GetCurrentLevel()
 var parent_node_for_display = null
 var brush_strokes_data = {"has_changed": false, "convex": [], "holes": []}
 var last_mouse_position = null

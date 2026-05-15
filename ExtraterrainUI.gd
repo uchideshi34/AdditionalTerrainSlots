@@ -1,5 +1,3 @@
-class_name ExtraTerrainUI
-
 var scrollcontainer
 var vbox
 var active_terrain_index = 0

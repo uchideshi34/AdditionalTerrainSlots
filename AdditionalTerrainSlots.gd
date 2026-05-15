@@ -572,13 +572,13 @@ func on_sync_to_dd_terrain_button_pressed():
 	for _i in 8:
 		Global.Editor.Tools["TerrainBrush"].SetTextureFromWindow(safe_load_texture(extraterrain.textures[_i]), _i)
 	
-	sync_from_rgb_splats_to_rgab_splats(extraterrain.splatImages, [terrain.splatImage, terrain.splatImage2])
+	sync_from_rgb_splats_to_rgba_splats(extraterrain.splatImages, [terrain.splatImage, terrain.splatImage2])
 	terrain.UpdateSplat()
 
 # function to synchronise the splat images
-func sync_from_rgb_splats_to_rgab_splats(sources: Array, destinations: Array):
+func sync_from_rgb_splats_to_rgba_splats(sources: Array, destinations: Array):
 
-	outputlog("sync_from_rgb_splats_to_rgab_splats: ",2)
+	outputlog("sync_from_rgb_splats_to_rgba_splats: ",2)
 
 	for img in sources:
 		img.lock()
@@ -897,6 +897,7 @@ func on_content_input(event):
 		areabrush.set_update_parent_node(Global.World.GetCurrentLevel())
 		areabrush.show_brush_stroke_preview(Global.WorldUI.get_MousePosition())
 
+
 # Function called when the tool is enabled.
 func on_tool_enable(tool_id):
 
@@ -1098,6 +1099,11 @@ func on_unhandled_pan_event(event):
 func on_unhandled_key_event(event):
 
 	outputlog("on_unhandled_key_event",4)
+	if tool_is_active:
+		if Input.is_action_just_released("brush_size_up",true):
+			update_brush_size_slider(1)
+		if Input.is_action_just_released("brush_size_down",true):
+			update_brush_size_slider(-1)
 
 # Function to set up the 
 func set_up_input_capture():
